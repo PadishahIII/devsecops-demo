@@ -30,8 +30,8 @@ jobs:
     name: 1 · format + unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -47,7 +47,7 @@ jobs:
     name: 2a · secrets (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Gitleaks detect
@@ -57,7 +57,7 @@ jobs:
             --source . --config security/gitleaks.toml \
             --report-format sarif --report-path /src/gitleaks.sarif \
             && echo "no leaks" || echo "leaks detected — gate will decide"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: scan-gitleaks
           path: gitleaks.sarif
@@ -71,7 +71,7 @@ jobs:
     name: 2b · SAST (semgrep)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Semgrep scan
         run: |
           docker run --rm -v "$PWD:/src" -w /src \
@@ -81,7 +81,7 @@ jobs:
             --metrics off \
             --sarif -o /src/semgrep.sarif \
             app deploy || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: scan-semgrep
           path: semgrep.sarif
@@ -95,7 +95,7 @@ jobs:
     name: 2c · SCA + SBOM (syft + grype)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Syft SBOM (source-level, CycloneDX)
         run: |
           docker run --rm -v "$PWD:/src" -w /src \
@@ -106,7 +106,7 @@ jobs:
           docker run --rm -v "$PWD:/src" -w /src \
             anchore/grype:${{ env.GRYPE_VERSION }} sbom:/src/sbom-pr.cdx.json \
             -o json --file /src/grype.json || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: scan-sca
           path: |
@@ -117,7 +117,7 @@ jobs:
     name: 2d · IaC / manifests (trivy config + org Rego)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Trivy config scan (builtin + org policy)
         run: |
           docker run --rm -v "$PWD:/src" -w /src \
@@ -132,7 +132,7 @@ jobs:
             --policy /src/security/trivy --namespaces trivy.policy \
             --format json --output /src/trivy-config.json \
             /src/deploy /src/app/Dockerfile || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: scan-iac
           path: |
@@ -149,11 +149,11 @@ jobs:
     needs: [secret-scan, sast, sca, iac-scan]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: _scans
           merge-multiple: true
@@ -166,7 +166,7 @@ jobs:
           python tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml \
             --out gate-decision.json --audit audit/exceptions-audit.jsonl
         continue-on-error: true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gate-output
           path: |
