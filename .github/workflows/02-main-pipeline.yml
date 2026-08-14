@@ -1,0 +1,244 @@
+# =============================================================================
+# Tier 2 — main pipeline (trusted). Build ONCE, promote the same digest.
+#
+# Stage map (spec's 7 stages):
+#   4. build → SBOM → image scan        (build-scan-sign)
+#   5. signing + provenance/attestation (build-scan-sign)
+#   6. deploy to ephemeral kind cluster + admission + smoke tests (deploy-verify)
+#   7. DAST (ZAP baseline) + promotion decision (deploy-verify)
+#
+# Design decisions exercised here:
+#   - build once, promote the same digest (design decision #4)
+#   - SBOM is inventory, signing is identity, provenance is build history,
+#     admission enforces trust (design decision #5)
+#   - ephemeral environment dies with the job
+# =============================================================================
+name: 02-main-pipeline
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write   # Sigstore keyless signing (OIDC)
+
+env:
+  IMAGE: ghcr.io/PadishahIII/devsecops-demo
+  SYFT_VERSION: "v1.11.1"
+  TRIVY_VERSION: "0.58.2"
+  APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
+  ADMIN_PASSWORD_HASH: ${{ secrets.ADMIN_PASSWORD_HASH }}
+
+jobs:
+  build-scan-sign:
+    name: 4+5 · build → SBOM → scan → sign → attest
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image once (with provenance + SBOM attestations)
+        uses: docker/build-push-action@v6
+        with:
+          context: app
+          file: app/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:main
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Resolve digest
+        id: digest
+        run: |
+          DIGEST=$(docker buildx imagetools inspect "${{ env.IMAGE }}:sha-${{ github.sha }}" --format '{{.Manifest.Digest}}')
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "built: ${{ env.IMAGE }}@$DIGEST"
+
+      - name: Syft SBOM (image-level, CycloneDX)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/src" \
+            anchore/syft:${{ env.SYFT_VERSION }} scan \
+            "${{ env.IMAGE }}:sha-${{ github.sha }}" \
+            -o cyclonedx-json --file /src/sbom.cdx.json
+
+      - name: Trivy image scan (gate input)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/src" \
+            aquasec/trivy:${{ env.TRIVY_VERSION }} image \
+            --severity CRITICAL,HIGH \
+            --format json --output /src/trivy-image.json \
+            "${{ env.IMAGE }}:sha-${{ github.sha }}" || true
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/src" \
+            aquasec/trivy:${{ env.TRIVY_VERSION }} image \
+            --severity CRITICAL,HIGH \
+            --format sarif --output /src/trivy-image.sarif \
+            "${{ env.IMAGE }}:sha-${{ github.sha }}" || true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign (identity) + attach SBOM attestation (inventory)
+        run: |
+          cosign sign --yes "${{ env.IMAGE }}@${{ steps.digest.outputs.digest }}"
+          cosign attest --yes --type cyclonedx \
+            --predicate sbom.cdx.json \
+            "${{ env.IMAGE }}@${{ steps.digest.outputs.digest }}"
+
+      - name: Verify signature + attestation (self-check)
+        run: |
+          cosign verify \
+            --certificate-identity-regexp "https://github.com/PadishahIII/devsecops-demo/.github/workflows/.*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${{ env.IMAGE }}@${{ steps.digest.outputs.digest }}"
+          cosign verify-attestation \
+            --type cyclonedx \
+            --certificate-identity-regexp "https://github.com/PadishahIII/devsecops-demo/.github/workflows/.*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${{ env.IMAGE }}@${{ steps.digest.outputs.digest }}"
+
+      - name: Save digest file
+        run: echo "${{ steps.digest.outputs.digest }}" > digest.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain
+          path: |
+            sbom.cdx.json
+            trivy-image.json
+            trivy-image.sarif
+            digest.txt
+          if-no-files-found: warn
+      - name: Save digest file
+        run: echo "${{ steps.digest.outputs.digest }}" > digest.txt
+
+  deploy-verify:
+    name: 6+7 · deploy to ephemeral kind → admission → smoke → DAST → promote
+    needs: [build-scan-sign]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create ephemeral kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: devsecops-demo
+          node_image: kindest/node:v1.30.0
+          wait: 120s
+
+      - name: Install Kyverno
+        uses: kyverno/install-kyverno-github-action@v1
+        with:
+          mode: cluster
+
+      - name: Apply admission policies
+        run: |
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=kyverno -n kyverno --timeout=180s || true
+          sleep 10
+          kubectl apply -f security/kyverno/
+          kubectl get clusterpolicy
+
+      - name: Deploy app (same digest — build once, promote)
+        run: |
+          kubectl apply -f deploy/k8s/namespace.yaml
+          kubectl create secret generic notes-secret -n notes \
+            --from-literal=app-secret-key="${APP_SECRET_KEY:-dev-only-fallback-key}" \
+            --from-literal=admin-password-hash="${ADMIN_PASSWORD_HASH:-}" || true
+          kubectl apply -f deploy/k8s/
+          kubectl set image deployment/notes notes="${{ env.IMAGE }}@${{ needs.build-scan-sign.outputs.digest }}" -n notes
+          kubectl rollout status deployment/notes -n notes --timeout=180s
+          kubectl get pods -n notes -o wide
+
+      - name: Admission evidence (Kyverno policy reports)
+        run: |
+          sleep 5
+          kubectl get policyreport -n notes -o wide || true
+
+      - name: Smoke tests
+        run: |
+          kubectl port-forward -n notes svc/notes 8080:80 >/dev/null &
+          PF=$!
+          sleep 5
+          curl -fsS http://127.0.0.1:8080/health
+          curl -fsS -X POST http://127.0.0.1:8080/notes -d "title=smoke&content=ok"
+          curl -fsS "http://127.0.0.1:8080/search?q=smoke" | grep -q smoke
+          echo "smoke tests passed"
+          kill $PF || true
+
+      - name: DAST — ZAP baseline
+        continue-on-error: true
+        run: |
+          kubectl port-forward -n notes svc/notes 8080:80 >/dev/null &
+          PF=$!
+          sleep 5
+          docker run --rm --add-host=host.docker.internal:host-gateway \
+            -v "$PWD:/zap/wrk/:rw" \
+            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+            -t http://host.docker.internal:8080/ \
+            -J zap.json -r zap-report.html || true
+          kill $PF || true
+
+      - name: Download supply-chain artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: supply-chain
+          path: _scans
+          merge-multiple: true
+
+      - name: Normalize findings
+        run: python tools/normalize.py _scans --out findings.jsonl
+
+      - name: Policy gate (promotion decision)
+        id: gate
+        continue-on-error: true
+        run: |
+          python tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml \
+            --out gate-decision.json --audit audit/exceptions-audit.jsonl
+
+      - name: Promote digest (same artifact, new tag)
+        if: steps.gate.outcome == 'success'
+        run: |
+          docker buildx imagetools create \
+            --tag "${{ env.IMAGE }}:promoted-${{ github.run_id }}" \
+            "${{ env.IMAGE }}@${{ needs.build-scan-sign.outputs.digest }}"
+          echo "promoted: ${{ env.IMAGE }}:promoted-${{ github.run_id }}"
+
+      - name: Fail if the gate failed
+        if: steps.gate.outcome == 'failure'
+        run: |
+          echo "::error::PROMOTION GATE FAILED — image built and signed but NOT promoted"
+          exit 1
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## devsecops-demo run summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- image: \`${{ env.IMAGE }}@${{ needs.build-scan-sign.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- signed: yes (Sigstore keyless), SBOM attestation: yes" >> "$GITHUB_STEP_SUMMARY"
+          echo "- gate: \`${{ steps.gate.outcome }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pipeline-output
+          path: |
+            findings.jsonl
+            gate-decision.json
+            audit/exceptions-audit.jsonl
+            zap.json
+            zap-report.html

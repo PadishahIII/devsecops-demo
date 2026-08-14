@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>notes</h1>
+<form method="post" action="/notes">
+  <label>title<input type="text" name="title" maxlength="200"></label>
+  <label>content<textarea name="content" rows="4" maxlength="4000"></textarea></label>
+  <input type="submit" value="save note">
+</form>
+<h2>recent notes</h2>
+{% for n in notes %}
+  <div class="note"><strong>{{ n.title }}</strong> <span class="muted">#{{ n.id }} · {{ n.created_at }}</span><br>{{ n.content }}</div>
+{% else %}
+  <p class="muted">no notes yet.</p>
+{% endfor %}
+{% endblock %}

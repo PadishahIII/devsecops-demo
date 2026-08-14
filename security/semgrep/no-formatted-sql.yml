@@ -1,0 +1,19 @@
+# Custom Semgrep rule: org policy forbids dynamic SQL construction.
+# p/security-audit covers Django/SQLAlchemy but NOT raw sqlite3/psycopg
+# string-built queries — this rule closes the gap (org rules > vendor rules).
+rules:
+  - id: no-formatted-sql
+    languages: [python]
+    severity: ERROR
+    message: >
+      SQL query built with an f-string / %-format / concatenation — classic
+      injection sink. Use parameterized queries ("?") exclusively.
+    patterns:
+      - pattern-either:
+          - pattern: $CONN.execute(f"...")
+          - pattern: $CONN.executemany(f"...")
+          - pattern: $CONN.execute($QUERY % $ARGS)
+          - pattern: $CONN.execute($QUERY + $PART)
+    metadata:
+      category: security
+      cwe: ["CWE-89: SQL Injection"]

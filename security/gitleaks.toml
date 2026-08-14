@@ -1,0 +1,21 @@
+# =============================================================================
+# devsecops-demo custom Gitleaks rules — org-specific secret patterns.
+# Extended from the default ruleset; this is how a team detects its own
+# secret formats (internal tokens, demo credentials, etc.) beyond vendor rules.
+# =============================================================================
+
+title = "devsecops-demo custom secret rules"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "demo-api-token"
+description = "devsecops-demo API token (ds-demo-<32 hex>)"
+regex = '''ds-demo-[a-f0-9]{32}'''
+secretGroup = 0
+entropy = 2.0
+
+# Inline "gitleaks:allow" comment opt-out — used for test fixtures only.
+[[rules.allowlists]]
+regexes = ["gitleaks:allow"]

@@ -1,0 +1,23 @@
+# =============================================================================
+# Approved, EXPIRING security exceptions.
+#
+# Matching is by exact finding fingerprint (rule|path|line|snippet hash),
+# computed by tools/normalize.py — exceptions are precise and self-invalidating:
+# if the code moves, the fingerprint stops matching and the finding fails
+# closed (an exception can never silently whitelist a whole rule).
+#
+# Audit trail: git history of this file + audit/exceptions-audit.jsonl written
+# by tools/gate.py on every run. Critical findings can never be excepted
+# (policy.yaml: exceptions.max_severity).
+# =============================================================================
+
+- id: EXC-0042
+  fingerprint: "__FILLED_BY_VALIDATION__"   # sha256(rule|path|line|snippet)
+  rule: no-md5-hashing
+  path: app/app.py
+  severity: HIGH
+  approved_by: jason.harris
+  date: 2026-08-14
+  expires: 2026-09-13
+  reason: "Legacy MD5 admin panel auth; SSO in front, WAF, hash never reused; remediation SEC-221 scheduled."
+  ticket: "https://github.com/PadishahIII/devsecops-demo/issues/221"

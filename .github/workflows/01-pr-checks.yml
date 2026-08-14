@@ -1,0 +1,180 @@
+# =============================================================================
+# Tier 1 — PR checks (untrusted). Cheap, read-only, no secrets available to
+# pull requests from forks. The gate job is the single decision point:
+# scanners report, policy decides, branch protection enforces.
+#
+# Design decisions exercised here:
+#   - new critical findings block a pull request (design decision #2)
+#   - severity alone is not risk (policy.yaml risk model)
+#   - secrets are categorical (gitleaks findings always fail)
+# =============================================================================
+name: 01-pr-checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write   # SARIF upload to code scanning (scoped)
+
+env:
+  SEMGREP_VERSION: "1.155.0"
+  GITLEAKS_VERSION: "v8.21.2"
+  SYFT_VERSION: "v1.11.1"
+  GRYPE_VERSION: "v0.79.0"
+  TRIVY_VERSION: "0.58.2"
+
+jobs:
+  fmt-lint-test:
+    name: 1 · format + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: app/requirements-dev.txt
+      - run: pip install -r app/requirements-dev.txt
+      - name: Format check
+        run: ruff check app tools
+      - name: Unit tests
+        run: pytest -q
+        working-directory: app
+
+  secret-scan:
+    name: 2a · secrets (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks detect
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            gitleaks/gitleaks:${{ env.GITLEAKS_VERSION }} detect \
+            --source . --config security/gitleaks.toml \
+            --report-format sarif --report-path /src/gitleaks.sarif \
+            && echo "no leaks" || echo "leaks detected — gate will decide"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scan-gitleaks
+          path: gitleaks.sarif
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gitleaks.sarif
+        continue-on-error: true   # fork PRs cannot upload; gate still decides
+
+  sast:
+    name: 2b · SAST (semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            semgrep/semgrep:${{ env.SEMGREP_VERSION }} semgrep scan \
+            --config p/security-audit \
+            --config security/semgrep \
+            --metrics off \
+            --sarif -o /src/semgrep.sarif \
+            app deploy || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scan-semgrep
+          path: semgrep.sarif
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+        continue-on-error: true
+
+  sca:
+    name: 2c · SCA + SBOM (syft + grype)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syft SBOM (source-level, CycloneDX)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            anchore/syft:${{ env.SYFT_VERSION }} scan dir:app \
+            -o cyclonedx-json --file /src/sbom-pr.cdx.json
+      - name: Grype scan (against the SBOM)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            anchore/grype:${{ env.GRYPE_VERSION }} sbom:/src/sbom-pr.cdx.json \
+            -o json --file /src/grype.json || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scan-sca
+          path: |
+            sbom-pr.cdx.json
+            grype.json
+
+  iac-scan:
+    name: 2d · IaC / manifests (trivy config + org Rego)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy config scan (builtin + org policy)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            aquasec/trivy:${{ env.TRIVY_VERSION }} config \
+            --severity CRITICAL,HIGH \
+            --policy /src/security/trivy --namespaces trivy.policy \
+            --format sarif --output /src/trivy-config.sarif \
+            /src/deploy /src/app/Dockerfile || true
+          docker run --rm -v "$PWD:/src" -w /src \
+            aquasec/trivy:${{ env.TRIVY_VERSION }} config \
+            --severity CRITICAL,HIGH \
+            --policy /src/security/trivy --namespaces trivy.policy \
+            --format json --output /src/trivy-config.json \
+            /src/deploy /src/app/Dockerfile || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scan-iac
+          path: |
+            trivy-config.sarif
+            trivy-config.json
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-config.sarif
+        continue-on-error: true
+
+  gate:
+    name: 3 · policy gate
+    needs: [secret-scan, sast, sca, iac-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          path: _scans
+          merge-multiple: true
+      - run: pip install -r tools/requirements.txt
+      - name: Normalize findings
+        run: python tools/normalize.py _scans --out findings.jsonl
+      - name: Policy gate
+        id: gate
+        run: |
+          python tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml \
+            --out gate-decision.json --audit audit/exceptions-audit.jsonl
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-output
+          path: |
+            findings.jsonl
+            gate-decision.json
+            audit/exceptions-audit.jsonl
+      - name: Fail the PR if the gate failed
+        if: steps.gate.outcome == 'failure'
+        run: |
+          echo "::error::POLICY GATE FAILED — see gate-decision.json artifact"
+          exit 1

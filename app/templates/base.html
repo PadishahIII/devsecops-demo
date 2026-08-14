@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}notes{% endblock %} · devsecops-demo</title>
+  <style>
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #24292f; }
+    h1 { font-size: 1.4rem; } a { color: #0969da; }
+    input[type=text], textarea { width: 100%; box-sizing: border-box; margin: .3rem 0 .8rem; padding: .4rem; }
+    .muted { color: #57606a; font-size: .85rem; }
+    .note { border: 1px solid #d0d7de; border-radius: 6px; padding: .6rem .8rem; margin: .6rem 0; }
+  </style>
+</head>
+<body>
+  <p class="muted"><a href="/">home</a> · <a href="/notes">notes</a> · <a href="/search">search</a> · <a href="/admin">admin</a></p>
+  {% block body %}{% endblock %}
+</body>
+</html>

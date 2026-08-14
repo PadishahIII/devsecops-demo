@@ -1,0 +1,14 @@
+# Custom Semgrep rule: org policy forbids MD5.
+# (Complementary to p/security-audit — the pipeline runs both.)
+rules:
+  - id: no-md5-hashing
+    pattern: hashlib.md5(...)
+    message: >
+      MD5 is not a suitable password hashing / integrity primitive.
+      Use a dedicated KDF (argon2/bcrypt/scrypt) or SHA-256+HMAC
+      for non-password integrity checks. Org policy: no new MD5.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      cwe: ["CWE-327: Use of a Broken or Risky Cryptographic Algorithm"]

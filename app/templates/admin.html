@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}admin{% endblock %}
+{% block body %}
+<h1>admin panel</h1>
+<form method="get" action="/admin">
+  <label>password<input type="password" name="password"></label>
+  <input type="submit" value="authenticate">
+</form>
+{% if authed %}
+  <p>✅ Access granted. (legacy MD5-authenticated panel — see EXC-0042)</p>
+{% else %}
+  <p class="muted">not authorized — supply the admin password.</p>
+{% endif %}
+{% endblock %}

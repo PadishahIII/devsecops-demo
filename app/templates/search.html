@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}search{% endblock %}
+{% block body %}
+<h1>search</h1>
+<form method="get" action="/search">
+  <label>query<input type="text" name="q" maxlength="100" value="{{ q }}"></label>
+  <input type="submit" value="search">
+</form>
+{% if q %}
+  <h2>results for "{{ q }}"</h2>
+  {% for n in results %}
+    <div class="note"><a href="/notes/{{ n.id }}"><strong>{{ n.title }}</strong></a> <span class="muted">#{{ n.id }}</span><br>{{ n.content }}</div>
+  {% else %}
+    <p class="muted">no results.</p>
+  {% endfor %}
+{% endif %}
+{% endblock %}

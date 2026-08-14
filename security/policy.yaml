@@ -1,0 +1,52 @@
+# =============================================================================
+# Central gate policy — severity alone is not risk.
+#
+# Action precedence (highest wins):
+#   1. exceptions (security/exceptions.yaml, exact fingerprint match, expiring)
+#   2. fail_rule_classes   (exploitability class overrides, e.g. injection)
+#   3. fail_tools          (categorical tools, e.g. secret leaks)
+#   4. fail_when           (KEV / EPSS overrides)
+#   5. severity_defaults   (baseline severity → action mapping)
+# =============================================================================
+
+severity_defaults:
+  critical: fail
+  high: warn
+  medium: pass
+  low: pass
+  informational: pass
+  unknown: warn
+
+# Exploitability classes: injection / deserialization / RCE rules are
+# fail-by-class even when the vendor rates them "only" High — reachable
+# injection is a blocking defect, not a warning.
+fail_rule_classes:
+  - "formatted-sql|sqli|sql-injection|sql_injection"
+  - "ssrf"
+  - "pickle|deseriali"
+  - "arbitrary.code.execution|rce"
+
+# Tool-level overrides: secrets are categorical — a leaked secret never passes,
+# regardless of severity or exception.
+fail_tools:
+  - gitleaks
+
+# KEV / EPSS: known-exploited or near-certain-exploitation findings behave
+# like Criticals even at High severity (see design decision #1).
+fail_when:
+  - field: known_exploited
+    value: true
+    severities: [high, critical]
+  - field: epss
+    op: ">="
+    value: 0.9
+    severities: [high]
+
+exceptions:
+  max_severity: high      # critical findings can never be excepted
+  file: security/exceptions.yaml
+
+# License policy (fed from the CycloneDX SBOM — structural output, not prose).
+licenses:
+  fail: []
+  warn: ["AGPL-3.0", "LGPL-3.0", "GPL-3.0"]

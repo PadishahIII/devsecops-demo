@@ -1,0 +1,99 @@
+# =============================================================================
+# Admission: pod hardening baseline (org policy) + registry allowlist.
+# Defense in depth: signature verification (verify-image.yaml) answers "was
+# this built by us?", the allowlist answers "did it come from a trusted place?",
+# and these rules answer "is it configured to survive here?".
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: pod-security-baseline
+  annotations:
+    policies.kyverno.io/title: Pod hardening baseline
+    policies.kyverno.io/severity: high
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: approved-registries
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+      exclude:
+        any:
+          - resources:
+              namespaces: ["kyverno", "kube-system"]
+      validate:
+        message: "Only images from approved registries are allowed."
+        pattern:
+          spec:
+            containers:
+              - image: "ghcr.io/PadishahIII/*"
+
+    - name: disallow-privileged
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+      exclude:
+        any:
+          - resources:
+              namespaces: ["kyverno", "kube-system"]
+      validate:
+        message: "Privileged containers are forbidden."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  =(privileged): "false"
+
+    - name: require-non-root
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+      exclude:
+        any:
+          - resources:
+              namespaces: ["kyverno", "kube-system"]
+      validate:
+        message: "Containers must run as non-root (runAsNonRoot=true)."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  runAsNonRoot: "true"
+
+    - name: require-seccomp
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+      exclude:
+        any:
+          - resources:
+              namespaces: ["kyverno", "kube-system"]
+      validate:
+        message: "Pods must set seccompProfile.type=RuntimeDefault."
+        pattern:
+          spec:
+            securityContext:
+              seccompProfile:
+                type: "RuntimeDefault"
+
+    - name: disallow-hostpath
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+      exclude:
+        any:
+          - resources:
+              namespaces: ["kyverno", "kube-system"]
+      validate:
+        message: "hostPath volumes are forbidden."
+        pattern:
+          spec:
+            =(volumes):
+              - =(hostPath): "null"

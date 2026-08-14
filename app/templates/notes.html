@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}all notes{% endblock %}
+{% block body %}
+<h1>all notes</h1>
+{% for n in notes %}
+  <div class="note"><a href="/notes/{{ n.id }}"><strong>{{ n.title }}</strong></a> <span class="muted">#{{ n.id }} · {{ n.created_at }}</span><br>{{ n.content }}</div>
+{% else %}
+  <p class="muted">nothing here.</p>
+{% endfor %}
+{% endblock %}
