@@ -45,6 +45,17 @@ Jenkins
 - Jenkins: to run pipelines, use GKE or other free tier cloud provider to serve Jenkins
 - Vuln management: Defect Dojo free tier
 
+**Tool selection**
+
+- linter: ruff
+- unit test: pytest
+- secrets: gitleaks
+- SAST: semgrep or joern or coverity?
+- SCA: syft+grype
+- image-scan: trivy
+- image-sign: cosign
+- DAST: ZAP
+
 ## Progress
 
 - [ ] build the minimal pipeline with tool integration and minimal gates, run on a simple repo -> to validate it works
