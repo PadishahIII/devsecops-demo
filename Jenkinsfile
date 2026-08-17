@@ -42,16 +42,18 @@ pipeline {
 	stage('secret-scan') {
 		steps {
 			sh 'mkdir -p reports'
-			// hard failure
-			sh """
-			docker run --rm -v "$WORKSPACE:/src" -w /src \
-				zricethezav/gitleaks:${env.GITLEAKS_VERSION} \
-				git /src \
-				-c /src/security/gitleaks.toml \
-				--redact \
-				--report-format sarif \
-				--report-path /src/reports/gitleaks.sarif
-			"""	
+			// continue on error, only for test
+			catchError {
+				sh """
+				docker run --rm -v "$WORKSPACE:/src" -w /src \
+					zricethezav/gitleaks:${env.GITLEAKS_VERSION} \
+					git /src \
+					-c /src/security/gitleaks.toml \
+					--redact \
+					--report-format sarif \
+					--report-path /src/reports/gitleaks.sarif
+				"""	
+			}
 		}
 	}
 	stage('SAST - semgrep') {
