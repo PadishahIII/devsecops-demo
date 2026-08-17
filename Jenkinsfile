@@ -4,7 +4,7 @@ pipeline {
     	GITLEAKS_VERSION = "v8.21.2"
   	SEMGREP_VERSION = "1.155.0"
 	SYFT_VERSION = "v1.51.0" 
-	GRYPE_VERSION = "v0.79.0" 
+	GRYPE_VERSION = "v0.115.0" 
 	TRIVY_VERSION = "0.58.2"
     }
     options {
@@ -79,6 +79,7 @@ pipeline {
 				sh """
 				docker run --rm -v "$WORKSPACE:/src" -w /src \
 				anchore/syft:${env.SYFT_VERSION} scan dir:. \
+				--source-name devsecops-demo \
 				--output cyclonedx-json=/src/reports/sbom.cdx.json
 				"""
 				sh """
