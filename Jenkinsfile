@@ -1,3 +1,8 @@
+def pretty_json(String workspace, String input, String output) {
+	sh """
+	docker run --rm -w ${workspace} stedolan/jq . ${input} > ${output}
+	"""
+}
 pipeline {
     agent any
     environment {
@@ -53,6 +58,7 @@ pipeline {
 					--report-format sarif \
 					--report-path /src/reports/gitleaks.sarif
 				"""	
+				pretty_json('/src/reports', 'gitleaks.sarif', 'gitleaks.sarif')
 			}
 		}
 	}
@@ -70,6 +76,7 @@ pipeline {
 					--sarif -o /src/reports/semgrep.sarif \
 					/src
 				"""
+				pretty_json('/src/reports', 'semgrep.sarif', 'semgrep.sarif')
 			}
 		}
 	}
@@ -82,11 +89,13 @@ pipeline {
 				--source-name devsecops-demo \
 				--output cyclonedx-json=/src/reports/sbom.cdx.json
 				"""
+				pretty_json('/src/reports', 'sbom.cdx.json', 'sbom.cdx.json')
 				sh """
 				docker run --rm -v "$WORKSPACE:/src" -w /src \
 				anchore/grype:${env.GRYPE_VERSION} sbom:/src/reports/sbom.cdx.json \
 				-o json --file /src/reports/grype.json
 				"""
+				pretty_json('/src/reports', 'grype.json', 'grype.json')
 			}
 		}
 	}
