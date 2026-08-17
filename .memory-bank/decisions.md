@@ -25,3 +25,10 @@
 - Memory: `pretty_json` now writes jq output to a temporary file under the host workspace and moves it into place after jq succeeds; the Syft report call uses `$WORKSPACE/reports` as its host path.
 - Evidence: `Jenkinsfile:1-6,92`; `git diff --check` and path assertions passed.
 - Reuse: Preserve the temporary-file pattern whenever a report is formatted in place.
+
+## 2026-08-17 — Persistent Grype DB cache
+
+- Context: The Jenkins SCA stage runs Grype in a disposable container and needs the vulnerability database to survive between builds.
+- Memory: Mount the named Docker volume `grype-db` at Grype's default database cache path `/root/.cache/grype/db`.
+- Evidence: `Jenkinsfile:96`; `git diff --check` passed and the volume path assertion matched.
+- Reuse: Keep this volume mount on the Grype invocation so database updates persist across container runs.

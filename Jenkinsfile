@@ -93,7 +93,7 @@ pipeline {
 				"""
 				pretty_json("$WORKSPACE/reports", 'sbom.cdx.json', 'sbom.cdx.json')
 				sh """
-				docker run --rm -v "$WORKSPACE:/src" -w /src \
+				docker run --rm -v "$WORKSPACE:/src" -v grype-db:/root/.cache/grype/db -w /src \
 				anchore/grype:${env.GRYPE_VERSION} sbom:/src/reports/sbom.cdx.json \
 				-o json --file /src/reports/grype.json
 				"""
