@@ -1,9 +1,11 @@
 """devsecops-demo — small Flask notes app.
 
-Main branch is the *clean baseline*: parameterized queries, security headers,
-no debug mode. One known legacy issue remains deliberately: MD5 password
-hashing, covered by an approved expiring exception (see security/exceptions.yaml,
-EXC-0042 / ticket SEC-221).
+The normal notes search uses parameterized queries and security headers; the
+explicit /demo/unsafe-search endpoint is intentionally vulnerable so the
+Jenkins Semgrep stage has a reproducible SQL injection finding. One known
+legacy issue remains deliberately: MD5 password hashing, covered by an
+approved expiring exception (see security/exceptions.yaml, EXC-0042 /
+ticket SEC-221).
 """
 import hashlib
 import hmac
@@ -86,6 +88,14 @@ def note_detail(note_id):
 def search():
     q = (request.args.get("q") or "").strip()[:100]
     results = db.search_notes(config.DB_PATH, q) if q else []
+    return render_template("search.html", q=q, results=results)
+
+
+@app.get("/demo/unsafe-search")
+def demo_unsafe_search():
+    """Expose the intentionally vulnerable SQLi seed for scanner demos."""
+    q = (request.args.get("q") or "").strip()[:100]
+    results = db.unsafe_search_notes(config.DB_PATH, q) if q else []
     return render_template("search.html", q=q, results=results)
 
 

@@ -1,10 +1,5 @@
-# Memory Bank — devsecops-demo
+# Project Memory Bank
 
-Index of durable cross-session memory. See `decisions.md`, `lessons.md` for details.
+Durable decisions and reusable workflow facts for `devsecops-demo`.
 
-| File | Purpose |
-|---|---|
-| `decisions.md` | Pipeline/design decisions (2026-08-14 design session) |
-| `lessons.md` | Validated tool facts (semgrep/gitleaks/syft behavior) |
-
-Canonical design: **`docs/DESIGN.md`** (the source of truth — read it first).
+- `decisions.md` — implementation and pipeline decisions.

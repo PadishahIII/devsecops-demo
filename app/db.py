@@ -1,4 +1,4 @@
-"""SQLite storage. All queries on main are parameterized (see demo/2 branch for the counter-example)."""
+"""SQLite storage with a deliberately vulnerable Semgrep demo query."""
 import sqlite3
 
 
@@ -48,6 +48,16 @@ def search_notes(path, pattern):
         "SELECT id, title, content, created_at FROM notes"
         " WHERE title LIKE ? OR content LIKE ? ORDER BY id DESC",
         (like, like),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def unsafe_search_notes(path, pattern):
+    """Intentionally vulnerable SQLi seed for the Semgrep demonstration only."""
+    conn = get_db(path)
+    rows = conn.execute(
+        f"SELECT * FROM notes WHERE title LIKE '%{pattern}%'"  # noqa: S608
     ).fetchall()
     conn.close()
     return rows
