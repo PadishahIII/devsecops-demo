@@ -2,7 +2,7 @@ pipeline {
     agent any
     environment {
     	GITLEAKS_VERSION = "v8.21.2"
-  	SEMGREP_VERSION = "1.155.0
+  	SEMGREP_VERSION = "1.155.0"
 	SYFT_VERSION = "v1.11.1" 
 	GRYPE_VERSION = "v0.79.0" 
 	TRIVY_VERSION = "0.58.2"
