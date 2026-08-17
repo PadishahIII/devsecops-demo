@@ -2,6 +2,10 @@ pipeline {
     agent any
     environment {
     	GITLEAKS_VERSION = "v8.21.2"
+  	SEMGREP_VERSION = "1.155.0
+	SYFT_VERSION = "v1.11.1" 
+	GRYPE_VERSION = "v0.79.0" 
+	TRIVY_VERSION = "0.58.2"
     }
     options {
     	timestamps()
@@ -38,18 +42,30 @@ pipeline {
 	stage('secret-scan') {
 		steps {
 			sh 'mkdir -p reports'
-			// continue on error
-			catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-				sh """
-				docker run --rm -v "$WORKSPACE:/src" -w /src \
-					zricethezav/gitleaks:${env.GITLEAKS_VERSION} \
-					git /src \
-					-c /src/security/gitleaks.toml \
-					--redact \
-					--report-format sarif \
-					--report-path /src/reports/gitleaks.sarif
-				"""	
-			}
+			// hard failure
+			sh """
+			docker run --rm -v "$WORKSPACE:/src" -w /src \
+				zricethezav/gitleaks:${env.GITLEAKS_VERSION} \
+				git /src \
+				-c /src/security/gitleaks.toml \
+				--redact \
+				--report-format sarif \
+				--report-path /src/reports/gitleaks.sarif
+			"""	
+		}
+	}
+	stage('SAST - semgrep') {
+		steps {
+			sh """
+			docker run --rm -v "$WORKSPACE:/src" -w /src \
+				semgrep/semgrep:${env.SEMGREP_VERSION} \
+				semgrep scan \
+				--config p/security-audit \
+				--config /src/security/semgrep \
+				--metrics off \
+				--sarif -o /src/reports/semgrep.sarif \
+				/src
+			"""
 		}
 	}
     }
@@ -57,6 +73,7 @@ pipeline {
 		always {
 			junit 'app/reports/pytest.xml' // JUnit plugin
 			archiveArtifacts artifacts: 'reports/gitleaks.sarif', allowEmptyArchive: true, fingerprint: true
+			archiveArtifacts artifacts: 'reports/semgrep.sarif', allowEmptyArchive: true, fingerprint: true
 		}
 		success { echo 'build OK' }
 		failure { echo 'build failed!' }
