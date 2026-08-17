@@ -12,7 +12,7 @@ useDefault = true
 [[rules]]
 id = "demo-api-token"
 description = "devsecops-demo API token (ds-demo-<32 hex>)"
-regex = '''ds-demo-[a-f0-9]{32}'''
+regex = '''ds-demo-[a-zA-Z0-9]{32}'''
 secretGroup = 0
 entropy = 2.0
 
