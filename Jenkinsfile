@@ -1,6 +1,6 @@
 def pretty_json(String workspace, String input, String output) {
 	sh """
-	docker run --rm -v "${workspace}:/wd" -w ${workspace} stedolan/jq . /wd/${input} > /wd/${output}
+	docker run --rm -v "${workspace}:/wd" -w /wd stedolan/jq . /wd/${input} > /wd/${output}
 	"""
 }
 pipeline {
