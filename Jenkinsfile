@@ -58,7 +58,7 @@ pipeline {
 					--report-format sarif \
 					--report-path /src/reports/gitleaks.sarif
 				"""	
-				pretty_json('/src/reports', 'gitleaks.sarif', 'gitleaks.sarif')
+				pretty_json("$WORKSPACE/reports", 'gitleaks.sarif', 'gitleaks.sarif')
 			}
 		}
 	}
@@ -76,7 +76,7 @@ pipeline {
 					--sarif -o /src/reports/semgrep.sarif \
 					/src
 				"""
-				pretty_json('/src/reports', 'semgrep.sarif', 'semgrep.sarif')
+				pretty_json("$WORKSPACE/reports", 'semgrep.sarif', 'semgrep.sarif')
 			}
 		}
 	}
@@ -95,7 +95,7 @@ pipeline {
 				anchore/grype:${env.GRYPE_VERSION} sbom:/src/reports/sbom.cdx.json \
 				-o json --file /src/reports/grype.json
 				"""
-				pretty_json('/src/reports', 'grype.json', 'grype.json')
+				pretty_json("$WORKSPACE/reports", 'grype.json', 'grype.json')
 			}
 		}
 	}
