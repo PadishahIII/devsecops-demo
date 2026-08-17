@@ -79,7 +79,7 @@ pipeline {
 				sh """
 				docker run --rm -v "$WORKSPACE:/src" -w /src \
 				anchore/syft:${env.SYFT_VERSION} scan dir:. \
-				-o cyclonedx-json --file /src/reports/sbom.cdx.json
+				--output cyclonedx-json=/src/reports/sbom.cdx.json
 				"""
 				sh """
 				docker run --rm -v "$WORKSPACE:/src" -w /src \
