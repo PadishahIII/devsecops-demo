@@ -42,7 +42,7 @@ pipeline {
 			catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
 				sh """
 				docker run --rm -v "$WORKSPACE:/src" -w /src \
-					gitleaks/gitleaks:${env.GITLEAKS_VERSION} \
+					zricethezav/gitleaks:${env.GITLEAKS_VERSION} \
 					git /src \
 					-c /src/security/gitleaks.toml \
 					--redact \
