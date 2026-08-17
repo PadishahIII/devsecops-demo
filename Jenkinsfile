@@ -16,10 +16,12 @@ pipeline {
 		}
 	}
         stage('fmt-lint-test') {
-	    docker {
-	    	image 'python:3.12.7-slim'
-		reuseNode true
-		args '-v pip-cache:/root/.cache/pip'
+	    agent {
+	        docker {
+	        	image 'python:3.12.7-slim'
+			reuseNode true
+			args '-v pip-cache:/root/.cache/pip'
+	        }
 	    }
 	    environment {
 	    	PIP_CACHE_DIR = '/root/.cache/pip'
