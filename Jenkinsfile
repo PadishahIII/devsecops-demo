@@ -1,6 +1,8 @@
 def pretty_json(String workspace, String input, String output) {
 	sh """
-	docker run --rm -v "${workspace}:/wd" -w /wd stedolan/jq . /wd/${input} > /wd/${output}
+		tmp=\$(mktemp "${workspace}/.jq-output.XXXXXX")
+		docker run --rm -v "${workspace}:/wd" -w /wd stedolan/jq . "/wd/${input}" > "\$tmp"
+		mv "\$tmp" "${workspace}/${output}"
 	"""
 }
 pipeline {
@@ -89,7 +91,7 @@ pipeline {
 				--source-name devsecops-demo \
 				--output cyclonedx-json=/src/reports/sbom.cdx.json
 				"""
-				pretty_json('/src/reports', 'sbom.cdx.json', 'sbom.cdx.json')
+				pretty_json("$WORKSPACE/reports", 'sbom.cdx.json', 'sbom.cdx.json')
 				sh """
 				docker run --rm -v "$WORKSPACE:/src" -w /src \
 				anchore/grype:${env.GRYPE_VERSION} sbom:/src/reports/sbom.cdx.json \
