@@ -19,9 +19,8 @@ pipeline {
 	    agent {
 	        docker {
 	        	image 'python:3.12.7-slim'
-			user 'root'
 			reuseNode true
-			args '-v pip-cache:/root/.cache/pip'
+			args '-u root -v pip-cache:/root/.cache/pip'
 	        }
 	    }
 	    environment {
