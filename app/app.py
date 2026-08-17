@@ -91,6 +91,7 @@ def search():
     return render_template("search.html", q=q, results=results)
 
 
+# NOTE: SQLi vuln to match SAST rules
 @app.get("/demo/unsafe-search")
 def demo_unsafe_search():
     """Expose the intentionally vulnerable SQLi seed for scanner demos."""
