@@ -1,7 +1,7 @@
 pipeline {
     agent any
     environment {
-    	GITLEAKS_VERSION: "v8.21.2"
+    	GITLEAKS_VERSION = "v8.21.2"
     }
     options {
     	timestamps()
