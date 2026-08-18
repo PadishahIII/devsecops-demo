@@ -146,6 +146,7 @@ pipeline {
 					unstable 'gate WARN — non-blocking warnings present'
 				}
 			}
+		}
 	}
     }
 	post {
