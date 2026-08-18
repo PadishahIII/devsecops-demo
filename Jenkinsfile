@@ -134,16 +134,18 @@ pipeline {
 			// Map the gate's verdict onto the workflow status. ERROR (absent input)
 			// and FAIL (policy blocked) both fail the build; WARN -> UNSTABLE.
 			script {
-				def decision = readJSON file: 'gate-decision.json'
-				def status = decision.status ?: 'pass'
+				// readJSON (Pipeline Utility Steps plugin) is NOT installed on this instance;
+				// read the file as text and parse with Groovy's built-in JsonSlurper instead.
+				def decision = readFile(file: 'gate-decision.json', encoding: 'UTF-8')
+				def parsed = new groovy.json.JsonSlurper().parseText(decision)
+				def status = parsed.status ?: 'pass'
 				echo "gate verdict: ${status}"
 				if (status == 'fail' || status == 'error') {
-					error "gate ${status.toUpperCase()} — ${decision.error ?: decision.counts.fail + ' blocking finding(s)'}"
+					error "gate ${status.toUpperCase()} — ${parsed.error ?: parsed.counts.fail + ' blocking finding(s)'}"
 				} else if (status == 'warn') {
 					unstable 'gate WARN — non-blocking warnings present'
 				}
 			}
-		}
 	}
     }
 	post {
