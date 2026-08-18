@@ -88,3 +88,24 @@
 - Evidence: tools/gate.py (STATUS_EXIT, absent-input branch), Jenkinsfile
   (gate + report stage), tools/report.py badges, docs/DESIGN.md §4.3.
 - Reuse: status is the contract between gate and CI; exit codes are the encoding.
+
+## 2026-08-18 — App enrichment: routes mapped to pipeline stages
+- Context: user asked to enrich the demo app so it exercises every stage of the
+  workflow (Jenkinsfile + docs/DESIGN.md + docs/idea.md).
+- Memory: (1) EXC-0042 fingerprint d22854fb… = sha256("semgrep|security.semgrep.
+  no-md5-hashing|src/app/app.py|43|return hashlib.md5(password.encode()).hexdigest()")
+  — computed from the UN-STRIPPED SARIF uri "src/app/app.py" (pre-lstrip code),
+  so the md5 return statement MUST stay on app.py line 43 or the exception
+  silently stops applying (EXCEPTION_UNUSED in audit). Line 43 is a hard
+  invariant for future edits. (2) New routes: /export/notes (CSV, ZAP surface),
+  /login+/logout (session auth; /admin honors session), /api/notes (JSON),
+  /metrics (numeric gauge), /demo/banner (release metadata). (3) config.py now
+  env-driven with the gitleaks seed at lines 9-10 (any re-line must keep the
+  seed stable or re-baseline gitleaks findings). (4) `import csv, io` style
+  multi-imports fail ruff E401 — split them.
+- Evidence: app/app.py, app/config.py, app/templates/*, app/tests/test_app.py
+  (11 tests), live gunicorn smoke all green; gate e2e on synthetic scan dir
+  shows md5 finding EXCEPTED / EXC-0042 applied.
+- Reuse: before adding/removing ANY line above app.py:43, re-verify the
+  fingerprint; run `python tools/normalize.py + gate.py` on a scan dir as the
+  exception regression test.
