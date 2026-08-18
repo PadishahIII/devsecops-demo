@@ -219,3 +219,11 @@ __marimo__/
 .beads
 Session.vim
 jenkins.war
+
+# gate/report outputs (generated)
+audit/
+findings.jsonl
+gated.jsonl
+gate-decision.json
+raw/
+reports/security-report/

@@ -128,14 +128,15 @@ def main() -> int:
     ap.add_argument("policy", help="security/policy.yaml")
     ap.add_argument("exceptions", help="security/exceptions.yaml")
     ap.add_argument("--out", required=True, help="gate-decision.json output path")
+    ap.add_argument("--findings-out", default=None,
+                    help="write the GATED findings stream here (each finding + action/reason) — the input for tools/report.py")
     ap.add_argument("--audit", default="audit/exceptions-audit.jsonl")
     args = ap.parse_args()
-
     policy = Policy.model_validate(yaml.safe_load(Path(args.policy).read_text()))
     exc_specs = yaml.safe_load(Path(args.exceptions).read_text()) or []
     exceptions = {e.fingerprint: e for e in (ExceptionSpec.model_validate(e) for e in exc_specs)}
 
-    findings = [json.loads(l) for l in Path(args.findings).read_text().splitlines() if l.strip()]
+    findings = [json.loads(ln) for ln in Path(args.findings).read_text().splitlines() if ln.strip()]
 
     fail_classes = [re.compile(p, re.IGNORECASE) for p in policy.fail_rule_classes]
     today = dt.date.today().isoformat()
@@ -151,6 +152,7 @@ def main() -> int:
             action, reason = "fail", f"tool={f['tool']} is categorical"
 
         # 2. exploitability class override — injection/deserialization/RCE
+        # FIXME: keyword matching is poor
         for rx in fail_classes:
             if rx.search(f["rule"] or ""):
                 action, reason = "fail", f"exploitability class matched rule {f['rule']}"
@@ -210,15 +212,23 @@ def main() -> int:
     warns = [f for f in findings if f.get("action") == "warn"]
     status = "fail" if fails else "pass"
 
+    def _entry(f):
+        return {"tool": f["tool"], "rule": f["rule"], "severity": f["severity"], "path": f["path"],
+                "reason": f["reason"], "source": f.get("source", ""), "fingerprint": f.get("fingerprint", "")}
     decision = {
         "status": status,
         "date": today,
         "counts": {"total": len(findings), "fail": len(fails), "warn": len(warns), "pass": len(findings) - len(fails) - len(warns)},
-        "failures": [{"tool": f["tool"], "rule": f["rule"], "severity": f["severity"], "path": f["path"], "reason": f["reason"], "source": f.get("source", "")} for f in fails],
-        "warnings": [{"tool": f["tool"], "rule": f["rule"], "severity": f["severity"], "path": f["path"], "reason": f["reason"], "source": f.get("source", "")} for f in warns],
+        "failures": [_entry(f) for f in fails],
+        "warnings": [_entry(f) for f in warns],
     }
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(decision, indent=2) + "\n")
+    if args.findings_out:
+        Path(args.findings_out).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.findings_out, "w") as fh:
+            for f in findings:
+                fh.write(json.dumps(f) + "\n")
     Path(args.audit).parent.mkdir(parents=True, exist_ok=True)
     with open(args.audit, "a") as fh:
         for entry in audit:

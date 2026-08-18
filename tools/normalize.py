@@ -92,9 +92,6 @@ def _rule_severity_map(run: dict) -> dict[str, str]:
         if not isinstance(rule, dict):
             continue
         level = rule.get("defaultConfiguration", {}).get("level")
-        if not level and rule.get("id") == "KSV-0014":
-            # trivy single-rule case: defaultConfiguration may be absent
-            level = "error"
         out[rule.get("id", "?")] = SARIF_LEVEL_SEV.get(level, "medium")
     return out
 
@@ -125,6 +122,10 @@ def parse_sarif(data: dict, tool: str, source: str) -> list[dict]:
             line = region.get("startLine", 0)
             snippet = (region.get("snippet") or {}).get("text", "")
             rule = res.get("ruleId", "unknown")
+            # gitleaks stores commit context in partialFingerprints; it is
+            # essential for a secret report (who leaked, when) — keep it.
+            pfp = res.get("partialFingerprints") or {}
+            metadata = {"commit": pfp} if isinstance(pfp, dict) and pfp else {}
             out.append(
                 Finding(
                     tool=tool,
@@ -135,11 +136,11 @@ def parse_sarif(data: dict, tool: str, source: str) -> list[dict]:
                     snippet=snippet,
                     message=(res.get("message") or {}).get("text", ""),
                     fingerprint=fingerprint(tool, rule, path, line, snippet),
+                    metadata=metadata,
                     source=source,
                 )
             )
     return [f.model_dump() for f in out]
-
 
 def _epss_score(v: dict):
     """Grype stores EPSS as a LIST of {cve, epss, percentile, date} records
@@ -213,7 +214,7 @@ def parse_grype(data: dict, source: str) -> list[dict]:
     for m in data.get("matches", []):
         v = m.get("vulnerability", {})
         art = m.get("artifact", {})
-        fix = m.get("fix", {})
+        fix = m.get("fix") or v.get("fix") or {}  # grype: fix may live under match OR vulnerability
         sev = (v.get("severity") or "unknown").lower()
         out.append(
             Finding(
@@ -262,8 +263,8 @@ def parse_cyclonedx_licenses(data: dict, source: str) -> list[dict]:
     out = []
     for c in data.get("components", []):
         names = []
-        for l in c.get("licenses", []) or []:
-            lic = l.get("license") or {}
+        for lc in c.get("licenses", []) or []:
+            lic = lc.get("license") or {}
             names.append(lic.get("id") or lic.get("name") or "?")
         if names:
             out.append(

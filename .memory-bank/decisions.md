@@ -53,3 +53,25 @@
 - Reuse: run `python3 tools/normalize.py <reports-dir> --out findings.jsonl --raw-dir raw`
   then `python3 tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml
   --out gate-decision.json`; exit 1 = block.
+
+## 2026-08-18 — Curated security report (tools/report.py)
+
+- Context: gate-decision.json is machine-readable but unreadable; the demo needed a
+  human report grouped per tool class with per-kind formats.
+- Memory: (1) NEW pipeline stage: normalize → gate --findings-out gated.jsonl →
+  report.py gated.jsonl gate-decision.json --out <DIR> writes report.md + raw/ into
+  that dir; --out is now a DIRECTORY. (2) report.py sections: SAST (source→sink code
+  blocks, "Reachable from" for the demo seeds), secrets (commit/author via gitleaks
+  partialFingerprints), SCA (CVSS/EPSS/KEV/fix + advisory URLs), misconfig (rule
+  description + avd link), license; verdicts FAIL/WARN/EXCEPTED/PASS. (3) gate.py
+  --findings-out persists the annotated stream (action+reason per finding); decision
+  lists now carry fingerprint. (4) normalize.py: gitleaks commit metadata now kept in
+  metadata.commit; grype fix lives under vulnerability.fix (not match.fix). (5) report
+  dedupes by fingerprint within a tool (gitleaks.sarif + -full + -repro = 2 unique
+  rows, not 9). (6) Jenkinsfile: stage 'gate + report' runs the trio, archives
+  reports/security-report/. (7) .gitignore now excludes audit/, findings.jsonl,
+  gated.jsonl, gate-decision.json, raw/, reports/security-report/.
+- Evidence: tools/report.py, tools/gate.py, tools/normalize.py, Jenkinsfile; real
+  artifacts → 7 unique findings, gate FAIL 11/4/2.
+- Reuse: run the trio in order; exit 1 from gate still blocks (report runs with || true
+  after it in Jenkins so the report renders even on failure).

@@ -119,6 +119,18 @@ pipeline {
 		}
 	}
     }
+	stage('gate + report') {
+		steps {
+			// normalize -> gate (the single decision point) -> curated MD report
+			sh '''
+			python3 tools/normalize.py reports --out findings.jsonl --raw-dir raw
+			python3 tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml \
+				--out gate-decision.json --findings-out gated.jsonl || true
+			python3 tools/report.py gated.jsonl gate-decision.json --out reports/security-report
+			'''
+			archiveArtifacts artifacts: 'reports/security-report/report.md, reports/security-report/raw/*', allowEmptyArchive: true
+		}
+	}
 	post {
 		always {
 			junit 'app/reports/pytest.xml' // JUnit plugin
