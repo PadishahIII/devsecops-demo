@@ -73,12 +73,68 @@ Fork PRs: no secrets, no SARIF upload (`continue-on-error`) — the gate still d
 | Admission | **Kyverno**: verify-images (keyless, sig + SBOM attestation) + PSS-style rules + registry allowlist | Enforces trust at deploy, not just scan output; registry allowlist = defense in depth                            | Ratify: same concept, heavier                                                                                                                      |
 | DAST      | **ZAP baseline**                                                                                    | Zero-config smoke DAST, JSON out; crawls + passive/active baseline                                               | Nuclei: template _sender_, not a crawler — complements ZAP (CVE checks post-deploy), doesn't replace it. Own DAST engine = future depth            |
 
-## 4. Post-process interfaces (the differentiator)
+## 4. Expected vulnerabilities (seeds) — one per control, verified against real scanner output
 
-The pipeline **ends where the data begins**. No prose reports from CI; structural
-artifacts only, consumed by anything later (vuln DB, Slack, renderer).
+The demo app is *deliberately* seeded so every scanner stage has at least one
+finding that matches the org rules. Nothing below is theoretical: each row was
+observed in real Jenkins artifact runs (2026-08-18) and re-verified after the
+app enrichment.
 
-### 4.1 Artifacts per stage
+### 4.1 Seed inventory (verified)
+
+| # | Seed | Tool + rule that fires | Verdict | Where | Verified |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Hardcoded API token `ds-demo-z86w…` in `app/config.py` | gitleaks org rule `demo-api-token` (`ds-demo-<32hex>`) | **FAIL — categorical** (`fail_tools`) | PR tier / secret-scan | ✅ real SARIF (3 findings: lines 6-7) |
+| 2 | SQLi: `db.unsafe_search_notes()` interpolates `pattern` into an f-string query, reachable from `/demo/unsafe-search` | semgrep `security.semgrep.no-formatted-sql` (org rule) | **FAIL — exploitability class** (`fail_rule_classes`) | PR tier / SAST | ✅ real SARIF (db.py:59, now :60) |
+| 3 | Legacy MD5 password hash in `app.hash_password()` (reachable from `/admin` and `/login`) | semgrep `security.semgrep.no-md5-hashing` (org rule) | **WARN → EXCEPTED** (EXC-0042, expires 2026-09-13) | PR + main / SAST | ✅ real SARIF (app.py:43) |
+| 4 | Dependency CVEs: flask 3.0.3 (GHSA-68rp-wp8r-4726), pytest 8.3.4 (GHSA-6w46-j5rx-g56g) | grype (PR) / trivy image (main) | LOW/MEDIUM → **PASS** by default; the gunicorn pin is the seeded critical | PR / SCA | ✅ real grype.json |
+| 5 | `gunicorn==22.0.0` — the seeded critical-with-fix (CVE-2024-6827, fix 22.0.0) | grype (PR) / trivy image (main) | **CRITICAL + fix available → FAIL** (severity + `fix_available`) | PR / SCA or main / 4 | ⏳ to validate (fallbacks listed) |
+| 6 | Deployment manifest: image `:main` tag (not digest) + pinned-by-tag scanner inputs | trivy config builtin `KSV-0014` (root/privileged container) | **WARN** at high severity (vendor severity) | PR / IaC | ✅ real SARIF (deployment.yaml:25) |
+| 7 | (Demo branches only) `privileged: true`, no securityContext — see §3-2 | trivy config org Rego `DS-001` (CRITICAL, org severity override) | **FAIL — policy-as-code** | PR / IaC (demo branch) | ⏳ to validate |
+| 8 | Unsigned / wrong-key image at deploy | Kyverno `verify-image` (keyless) + `pod-security-baseline` (registry allowlist, non-root, seccomp) | **Admission DENY** (not a finding — enforcement) | main / 6 | ⏳ to validate |
+
+### 4.2 Fingerprint stability invariants (do not break)
+
+The gate matches exceptions by exact fingerprint, so the *physical location* of
+seeds is part of the contract:
+
+- `app/app.py` line **43** — the MD5 statement. EXC-0042's fingerprint
+  `d22854fb3e9aa2b7c7a70ab45fcc84f5b4566442aeb37d6b60fd4ebbe12b6510` was
+  computed from `semgrep|security.semgrep.no-md5-hashing|src/app/app.py|43|snippet`
+  (pre-lstrip SARIF URI). If this line moves, the exception silently stops applying
+  and the audit records `EXCEPTION_UNUSED`.
+- `app/config.py` lines 9-10 — the gitleaks seed. Moving it re-baselines every
+  gitleaks finding (and the 3 historical commits that leaked it).
+- Normal routes stay safe (parameterized queries, security headers); only
+  `/demo/unsafe-search` and `/admin` are intentionally weak. This contrast is
+  what makes the gate story believable.
+
+### 4.3 Expected gate output (baseline run)
+
+```
+gate: FAIL — 4 fail, 2 warn, 2 pass
+  FAIL  [gitleaks/medium] demo-api-token @ app/config.py — tool=gitleaks is categorical
+  FAIL  [semgrep/high]    security.semgrep.no-formatted-sql @ /src/app/db.py — exploitability class matched
+  WARN  [semgrep/high]    security.semgrep.no-md5-hashing @ /src/app/app.py — exception EXC-0042 applied
+  WARN  [trivy/high]      KSV-0014 @ deploy/k8s/deployment.yaml — severity=high
+```
+
+That is the *honest* baseline: the demo repo is never green while the seeds are
+in place. Green only happens after a fix PR (or on a clean fork).
+
+### 4.4 App surface that feeds the scans (route → control)
+
+| Route | Behavior | Feeds |
+| --- | --- | --- |
+| `/search` | parameterized search (safe) | contrast story for the SQLi seed |
+| `/demo/unsafe-search` | f-string SQLi sink | semgrep `no-formatted-sql` → FAIL |
+| `/admin` | MD5 password check | semgrep `no-md5-hashing` → EXCEPTED |
+| `/login` `/logout` | session auth (demo-only) | ZAP authenticated-surface crawl |
+| `/export/notes` | CSV download (safe headers) | DAST exfiltration surface |
+| `/api/notes` | JSON API | post-process consumers |
+| `/metrics` | numeric gauge | gate/report/vuln-DB integration |
+| `/demo/banner` | release metadata from env | provenance story (commit → env → runtime) |
+### 4.5 Artifacts per stage
 
 | Stage | Tool                              | Format            | Consumer                                                               |
 | ----- | --------------------------------- | ----------------- | ---------------------------------------------------------------------- |
@@ -89,7 +145,7 @@ artifacts only, consumed by anything later (vuln DB, Slack, renderer).
 | 4/5   | syft SBOM / cosign attestation    | CycloneDX + Rekor | provenance story; Kyverno admission                                    |
 | 7     | ZAP baseline                      | JSON              | normalizer                                                             |
 
-### 4.2 Unified finding schema (`findings.jsonl`)
+### 4.6 Unified finding schema (`findings.jsonl`)
 
 ```json
 {
@@ -97,7 +153,7 @@ artifacts only, consumed by anything later (vuln DB, Slack, renderer).
   "rule": "security.semgrep.no-md5-hashing",
   "severity": "high",
   "path": "app/app.py",
-  "line": 36,
+  "line": 43,
   "snippet": "return hashlib.md5(password.encode()).hexdigest()",
   "message": "...",
   "fingerprint": "<sha256>",
@@ -115,7 +171,7 @@ artifacts only, consumed by anything later (vuln DB, Slack, renderer).
   fallback from §3-2); grype/trivy/ZAP use native severities canonicalized to
   `critical/high/medium/low/informational`.
 
-### 4.3 Gate (`gate.py`) — single decision point, precedence order
+### 4.7 Gate (`gate.py`) — single decision point, precedence order
 
 ```
 exceptions (exact fingerprint, expiring)  >  fail_rule_classes (injection/RCE…)
@@ -138,17 +194,25 @@ Deploy to kind/K8s with a simple gate (fail on Critical, warn on High, ticket on
 
 ## 5. Seeded failure catalogue (5 blocked + 1 excepted)
 
+The verified inventory lives in §4.1; this table is the *demo story* version —
+what gets shown in the interview and on which branch. §4.1 is the source of
+truth for what each seed produces today.
+
 | #   | Seed                                                             | Tool that blocks                                  | Tier/stage          | The _correct reason_                                                                                               | Status                                               |
 | --- | ---------------------------------------------------------------- | ------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
-| 1   | Hardcoded token `ds-demo-<32hex>` in `config.py`                 | gitleaks (org rule)                               | PR / 2              | Secrets are **categorical** — a leaked secret can never be un-leaked by review; exceptions forbidden               | ready (custom pattern avoids GitHub push-protection) |
+| 1   | Hardcoded token `ds-demo-<32hex>` in `config.py` (line 9-10)     | gitleaks (org rule)                               | PR / 2              | Secrets are **categorical** — a leaked secret can never be un-leaked by review; exceptions forbidden               | ready (custom pattern avoids GitHub push-protection) |
 | 2   | SQLi: `db.unsafe_search_notes()` interpolates `pattern` in the `/demo/unsafe-search` route | semgrep `no-formatted-sql` (org rule)             | PR / 2              | Injection is **reachable exploitation**, not a warning — fail-by-class even at High                                | validated today                                      |
-| 3   | `gunicorn==21.2.0` (CVE-2024-6827)                               | grype (PR) **or** trivy image (main)              | PR / 2c or main / 4 | **Critical + fix available** — debt with a fix is a blocker; KEV/EPSS override if present                          | to validate (fallbacks listed)                       |
-| 4   | Deployment: `privileged: true`, no securityContext, `latest` tag | trivy config DS-001 (org Rego, severity CRITICAL) | PR / 3              | **Policy-as-code**: org severity overrides vendor severity; privileged = critical, period                          | to validate                                          |
+| 3   | `gunicorn==22.0.0` pin — seeded critical-with-fix (CVE-2024-6827) | grype (PR) **or** trivy image (main)              | PR / 2c or main / 4 | **Critical + fix available** — debt with a fix is a blocker; KEV/EPSS override if present                          | to validate (fallbacks listed)                       |
+| 4   | Deployment manifest: `:main` tag, KSV-0014 (privileged)          | trivy config builtin KSV-0014 + org Rego DS-001    | PR / 3              | **Policy-as-code**: org severity overrides vendor severity; privileged = critical, period                          | KSV-0014 validated; DS-001 to validate               |
 | 5   | Unsigned / wrong-key image at deploy                             | Kyverno `verify-images` + registry allowlist      | main / 6            | **Scanning ≠ trust**: image was never scanned, but admission denies it — identity+integrity are enforced at deploy | to validate                                          |
-| E   | MD5 password hashing (main baseline)                             | semgrep `no-md5-hashing` — HIGH, **excepted**     | PR + main           | Exception honors the **compensating controls** (SSO/WAF/ticket) and expires                                        | validated today                                      |
+| E   | MD5 password hashing (main baseline, app.py:43)                  | semgrep `no-md5-hashing` — HIGH, **excepted**     | PR + main           | Exception honors the **compensating controls** (SSO/WAF/ticket) and expires                                        | validated today                                      |
 | 6†  | Same exception, `expires` set to yesterday                       | gate                                              | any                 | **Expiry enforcement** — expired exceptions block; nothing is indefinite                                           | trivial (demo step)                                  |
 
 † Optional dramatic sixth case for the live demo.
+
+⚠️ **Line numbers are part of the contract.** See §4.2 — moving the MD5 line
+(app.py:43) or the gitleaks seed (config.py:9-10) silently breaks the EXC-0042
+exception or re-baselines leak history.
 
 ## 6. Design decisions (spec) → mechanisms
 
