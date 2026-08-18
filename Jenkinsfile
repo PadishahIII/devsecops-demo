@@ -39,6 +39,7 @@ pipeline {
 	    }
             steps {
 	    	sh 'python -m pip install -r app/requirements-dev.txt'
+		// lint issues are hard failure
 		sh 'python -m ruff check app'
 		dir('app') {
 			sh 'mkdir -p reports'

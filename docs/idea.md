@@ -56,6 +56,17 @@ Jenkins
 - image-sign: cosign
 - DAST: ZAP
 
+**Gate**
+
+1. read artifacts using corresponding schema
+2. assess reachability/exploitability, exposure via AI (configure api key by env, injected by jenkins secret - base url+api key)
+3. filter and group vulns using specific policy (configuration file, e.g. fail critical, warn high and skip exceptions)
+4. generate human-readable report with reference links and upload to jenkins artifact
+5. determine whether to fail the workflow or not
+
+**Vuln Management**
+discover → triage → SLA → fix → verify → exception
+
 ## Progress
 
 - [ ] build the minimal pipeline with tool integration and minimal gates, run on a simple repo -> to validate it works
