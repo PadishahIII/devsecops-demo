@@ -12,7 +12,7 @@ pipeline {
   	SEMGREP_VERSION = "1.155.0"
 	SYFT_VERSION = "v1.51.0" 
 	GRYPE_VERSION = "v0.115.0" 
-	TRIVY_VERSION = "0.58.2"
+	TRIVY_VERSION = "0.74.0"
     }
     options {
     	timestamps()
@@ -101,6 +101,22 @@ pipeline {
 			}
 		}
 	}
+	stage('IaC - trivy') {
+		steps {
+			catchError {
+				sh """
+				docker run --rm -v "$WORKSPACE:/src" -v trivy-cache:/root/.cache/trivy/ -w /src \
+				aquasec/trivy:${env.TRIVY_VERSION} config \
+				--severity CRITICAL,HIGH \
+				--check-namespaces user --config-check /src/security/trivy \
+				--cache-dir /root/.cache/trivy \
+				--format sarif -o /src/reports/trivy.sarif \
+				/src
+				"""
+				pretty_json("$WORKSPACE/reports", 'trivy.sarif', 'trivy.sarif')
+			}
+		}
+	}
     }
 	post {
 		always {
@@ -112,6 +128,8 @@ pipeline {
 			archiveArtifacts artifacts: 'reports/sbom.cdx.json', allowEmptyArchive: true, fingerprint: true
 
 			archiveArtifacts artifacts: 'reports/grype.json', allowEmptyArchive: true, fingerprint: true
+
+			archiveArtifacts artifacts: 'reports/trivy.sarif', allowEmptyArchive: true, fingerprint: true
 		}
 		success { echo 'build OK' }
 		failure { echo 'build failed!' }
