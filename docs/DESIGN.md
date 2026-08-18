@@ -101,12 +101,16 @@ artifacts only, consumed by anything later (vuln DB, Slack, renderer).
   "snippet": "return hashlib.md5(password.encode()).hexdigest()",
   "message": "...",
   "fingerprint": "<sha256>",
-  "metadata": { "known_exploited": false, "epss": null }
+  "metadata": { "known_exploited": false, "epss": null },
+  "source": "semgrep.sarif"
 }
 ```
 
 - `fingerprint = sha256(tool | rule | path | line | snippet)` — location-precise, so an
   exception can never whitelist a whole rule.
+- `source` = the raw artifact file this finding came from (normalize.py also copies
+  the artifacts to `raw/`) — the raw scanner output remains the source of truth for
+  detailed reports; the findings stream only carries what the gate needs.
 - Severity mapping: SARIF `error→high, warning→medium, note→low` (with the rules-table
   fallback from §3-2); grype/trivy/ZAP use native severities canonicalized to
   `critical/high/medium/low/informational`.

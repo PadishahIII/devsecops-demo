@@ -10,6 +10,11 @@ and exits non-zero if anything fails — that is what blocks the pipeline.
 Risk model (policy.yaml):
   severity defaults < KEV/EPSS overrides < tool overrides < exploitability
   class overrides < expiring exceptions. Severity alone is never the verdict.
+
+The policy shape is typed with pydantic (Policy, SeverityDefaults,
+FailWhenCondition, ExceptionsPolicy, LicensePolicy) — no string-literal
+field access, unknown policy keys surface as validation errors at startup
+instead of silently doing nothing.
 """
 import argparse
 import datetime as dt
@@ -17,11 +22,100 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Literal, Optional
 
 import yaml
+from pydantic import BaseModel, Field, field_validator
 
 ACTION_ORDER = {"fail": 3, "warn": 2, "pass": 1}
 MAX_SEV = {"low": 1, "medium": 2, "high": 3, "critical": 4, "informational": 0, "unknown": 0}
+
+Severity = Literal["critical", "high", "medium", "low", "informational", "unknown"]
+Action = Literal["fail", "warn", "pass"]
+
+
+class SeverityDefaults(BaseModel):
+    model_config = {"extra": "forbid"}
+    critical: Action = "fail"
+    high: Action = "warn"
+    medium: Action = "pass"
+    low: Action = "pass"
+    informational: Action = "pass"
+    unknown: Action = "warn"
+
+
+class FailWhenCondition(BaseModel):
+    model_config = {"extra": "forbid"}
+    field: str
+    value: Optional[float | bool] = None
+    op: str = ">="
+    severities: list[Severity] = Field(default_factory=list)
+
+
+class ExceptionsPolicy(BaseModel):
+    model_config = {"extra": "forbid"}
+    max_severity: Severity = "high"
+    file: str = "security/exceptions.yaml"
+
+
+class LicensePolicy(BaseModel):
+    model_config = {"extra": "forbid"}
+    fail: list[str] = Field(default_factory=list)
+    warn: list[str] = Field(default_factory=list)
+
+
+class Policy(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    """Typed shape of security/policy.yaml. Unknown keys → validation error
+    at startup (fail fast), so a typo cannot silently disable a control."""
+
+    severity_defaults: SeverityDefaults = SeverityDefaults()
+    fail_rule_classes: list[str] = Field(default_factory=list)
+    fail_tools: list[str] = Field(default_factory=list)
+    fail_when: list[FailWhenCondition] = Field(default_factory=list)
+    exceptions: ExceptionsPolicy = ExceptionsPolicy()
+    licenses: LicensePolicy = LicensePolicy()
+
+    @field_validator("fail_when", mode="before")
+    @classmethod
+    def _default_fail_when(cls, v):
+        return v or []
+
+    @field_validator("fail_rule_classes", "fail_tools", mode="before")
+    @classmethod
+    def _default_lists(cls, v):
+        return v or []
+
+
+class ExceptionSpec(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    """One entry of security/exceptions.yaml — an exact-fingerprint, expiring
+    approval. Matching is exact, so an exception can never silently whitelist
+    a whole rule; if the code moves the fingerprint stops matching and the
+    finding fails closed."""
+
+    id: str
+    fingerprint: str
+    rule: str = ""
+    path: str = ""
+    severity: str = "high"
+    approved_by: str = ""
+    date: str = ""
+    expires: str = ""
+    reason: str = ""
+    ticket: str = ""
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def _norm_sev(cls, v):
+        return str(v).lower() if v else "high"
+
+    @field_validator("date", "expires", mode="before")
+    @classmethod
+    def _norm_date(cls, v):
+        return str(v or "")
 
 
 def sev_at_least(sev, threshold):
@@ -37,23 +131,23 @@ def main() -> int:
     ap.add_argument("--audit", default="audit/exceptions-audit.jsonl")
     args = ap.parse_args()
 
-    policy = yaml.safe_load(Path(args.policy).read_text())
+    policy = Policy.model_validate(yaml.safe_load(Path(args.policy).read_text()))
     exc_specs = yaml.safe_load(Path(args.exceptions).read_text()) or []
-    exceptions = {e["fingerprint"]: e for e in exc_specs}
+    exceptions = {e.fingerprint: e for e in (ExceptionSpec.model_validate(e) for e in exc_specs)}
 
     findings = [json.loads(l) for l in Path(args.findings).read_text().splitlines() if l.strip()]
 
-    fail_classes = [re.compile(p, re.IGNORECASE) for p in policy.get("fail_rule_classes", [])]
+    fail_classes = [re.compile(p, re.IGNORECASE) for p in policy.fail_rule_classes]
     today = dt.date.today().isoformat()
     audit = []
 
     for f in findings:
         sev = f["severity"]
-        action = policy.get("severity_defaults", {}).get(sev, "warn")
+        action = policy.severity_defaults.model_dump().get(sev, "warn")
         reason = f"severity={sev}"
 
         # 1. tool override — secrets are categorical
-        if f["tool"] in policy.get("fail_tools", []):
+        if f["tool"] in policy.fail_tools:
             action, reason = "fail", f"tool={f['tool']} is categorical"
 
         # 2. exploitability class override — injection/deserialization/RCE
@@ -63,33 +157,33 @@ def main() -> int:
                 break
 
         # 3. KEV / EPSS overrides
-        for cond in policy.get("fail_when", []):
-            if sev not in cond["severities"]:
+        for cond in policy.fail_when:
+            if sev not in cond.severities:
                 continue
-            val = f.get("metadata", {}).get(cond["field"])
-            if cond["field"] == "epss" and isinstance(val, (int, float)):
-                if val >= cond.get("value", 0.9):
-                    action, reason = "fail", f"EPSS {val:.2f} >= {cond.get('value', 0.9)}"
-            elif cond["field"] == "known_exploited" and val:
+            val = f.get("metadata", {}).get(cond.field)
+            if cond.field == "epss" and isinstance(val, (int, float)):
+                if val >= cond.value:
+                    action, reason = "fail", f"EPSS {val:.2f} >= {cond.value}"
+            elif cond.field == "known_exploited" and val:
                 action, reason = "fail", "known-exploited (KEV) — actively exploited in the wild"
 
         # 4. exception — exact fingerprint, expiring, severity-capped
         exc = exceptions.get(f["fingerprint"])
         if exc:
-            if sev_at_least(sev, "critical") or MAX_SEV.get(sev, 0) > MAX_SEV.get(policy.get("exceptions", {}).get("max_severity", "high"), 0):
+            if sev_at_least(sev, "critical") or MAX_SEV.get(sev, 0) > MAX_SEV.get(policy.exceptions.max_severity, 0):
                 action, reason = "fail", "exception NOT allowed at this severity"
                 audit.append({"event": "EXCEPTION_DENIED", "fingerprint": f["fingerprint"], "rule": f["rule"],
-                              "severity": sev, "date": today, "exc_id": exc.get("id")})
-            elif exc.get("expires", "1970-01-01") < today:
-                action, reason = "fail", f"exception {exc.get('id')} EXPIRED on {exc['expires']}"
+                              "severity": sev, "date": today, "exc_id": exc.id})
+            elif exc.expires < today:
+                action, reason = "fail", f"exception {exc.id} EXPIRED on {exc.expires}"
                 audit.append({"event": "EXCEPTION_EXPIRED", "fingerprint": f["fingerprint"], "rule": f["rule"],
-                              "severity": sev, "date": today, "exc_id": exc.get("id"), "expires": exc.get("expires")})
+                              "severity": sev, "date": today, "exc_id": exc.id, "expires": exc.expires})
             else:
-                action, reason = "warn", f"exception {exc.get('id')} applied (expires {exc.get('expires')})"
+                action, reason = "warn", f"exception {exc.id} applied (expires {exc.expires})"
                 audit.append({"event": "EXCEPTION_APPLIED", "fingerprint": f["fingerprint"], "rule": f["rule"],
-                              "severity": sev, "date": today, "exc_id": exc.get("id"),
-                              "approved_by": exc.get("approved_by"), "expires": exc.get("expires"),
-                              "ticket": exc.get("ticket"), "reason": exc.get("reason")})
+                              "severity": sev, "date": today, "exc_id": exc.id,
+                              "approved_by": exc.approved_by, "expires": exc.expires,
+                              "ticket": exc.ticket, "reason": exc.reason})
         f["action"] = action
         f["reason"] = reason
 
@@ -97,12 +191,12 @@ def main() -> int:
     used = {f["fingerprint"] for f in findings}
     for fp_, e in exceptions.items():
         if fp_ not in used:
-            audit.append({"event": "EXCEPTION_UNUSED", "fingerprint": fp_, "rule": e.get("rule"),
-                          "date": today, "exc_id": e.get("id"), "note": "no finding matched — fail-closed? check rule/path/line drift"})
+            audit.append({"event": "EXCEPTION_UNUSED", "fingerprint": fp_, "rule": e.rule,
+                          "date": today, "exc_id": e.id, "note": "no finding matched — fail-closed? check rule/path/line drift"})
 
     # license policy from SBOM findings
-    license_fail = policy.get("licenses", {}).get("fail", [])
-    license_warn = policy.get("licenses", {}).get("warn", [])
+    license_fail = policy.licenses.fail
+    license_warn = policy.licenses.warn
     for f in findings:
         if f.get("rule") != "license":
             continue
@@ -120,8 +214,8 @@ def main() -> int:
         "status": status,
         "date": today,
         "counts": {"total": len(findings), "fail": len(fails), "warn": len(warns), "pass": len(findings) - len(fails) - len(warns)},
-        "failures": [{"tool": f["tool"], "rule": f["rule"], "severity": f["severity"], "path": f["path"], "reason": f["reason"]} for f in fails],
-        "warnings": [{"tool": f["tool"], "rule": f["rule"], "severity": f["severity"], "path": f["path"], "reason": f["reason"]} for f in warns],
+        "failures": [{"tool": f["tool"], "rule": f["rule"], "severity": f["severity"], "path": f["path"], "reason": f["reason"], "source": f.get("source", "")} for f in fails],
+        "warnings": [{"tool": f["tool"], "rule": f["rule"], "severity": f["severity"], "path": f["path"], "reason": f["reason"], "source": f.get("source", "")} for f in warns],
     }
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(decision, indent=2) + "\n")

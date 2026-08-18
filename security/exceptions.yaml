@@ -12,7 +12,7 @@
 # =============================================================================
 
 - id: EXC-0042
-  fingerprint: "__FILLED_BY_VALIDATION__"   # sha256(rule|path|line|snippet)
+  fingerprint: "d22854fb3e9aa2b7c7a70ab45fcc84f5b4566442aeb37d6b60fd4ebbe12b6510"  # sha256(semgrep|security.semgrep.no-md5-hashing|app/app.py|43|snippet-stripped)
   rule: no-md5-hashing
   path: app/app.py
   severity: HIGH

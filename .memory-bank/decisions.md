@@ -32,3 +32,24 @@
 - Memory: Mount the named Docker volume `grype-db` at Grype's default database cache path `/root/.cache/grype/db`.
 - Evidence: `Jenkinsfile:96`; `git diff --check` passed and the volume path assertion matched.
 - Reuse: Keep this volume mount on the Grype invocation so database updates persist across container runs.
+
+## 2026-08-18 — Gate/normalize overhaul: pydantic policy + lean findings stream
+- Context: gate.py accessed policy dicts via string literals (no schema); normalize.py
+  diverged from real Jenkins artifacts (~/.jenkins/workspace/test/reports).
+- Memory: (1) Policy/exceptions are now pydantic models with `extra="forbid"` — typos
+  fail fast at startup instead of silently disabling a control. (2) findings.jsonl is
+  a LEAN gating stream (common fields + `source` pointer); normalize.py copies raw
+  artifacts to `raw/` — raw files stay the source of truth for detailed reports.
+  (3) SARIF severity: semgrep (1.155.0) emits NO result level and NO ruleIndex — the
+  severity lives in runs[].tool.driver.rules[i].defaultConfiguration.level, looked up
+  by rule id; gitleaks v8.21.2 has no level anywhere (default medium, gate treats it
+  categorically); trivy Rego SARIF has a single-rule table and no ruleIndex.
+  (4) grype EPSS is a LIST of {cve, epss, percentile, date} (v0.115+), not the old
+  {EPSS:{score}} dict. (5) fingerprint path normalization: lstrip("/") + snippet strip
+  so the exception fp matches despite the /src/ SARIF URI base.
+- Evidence: tools/gate.py, tools/normalize.py, security/exceptions.yaml (EXC-0042 fp
+  d22854fb... = sha256(semgrep|security.semgrep.no-md5-hashing|app/app.py|43|stripped));
+  real-artifact run: 17 findings, md5 finding now EXCEPTION_APPLIED.
+- Reuse: run `python3 tools/normalize.py <reports-dir> --out findings.jsonl --raw-dir raw`
+  then `python3 tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml
+  --out gate-decision.json`; exit 1 = block.
