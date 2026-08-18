@@ -118,7 +118,6 @@ pipeline {
 			}
 		}
 	}
-    }
 	stage('gate + report') {
 		steps {
 			// normalize -> gate (the single decision point) -> curated MD report
@@ -130,6 +129,7 @@ pipeline {
 			'''
 		}
 	}
+    }
 	post {
 		always {
 			junit 'app/reports/pytest.xml' // JUnit plugin
