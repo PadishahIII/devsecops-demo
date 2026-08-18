@@ -1,7 +1,7 @@
 def pretty_json(String workspace, String input, String output) {
 	sh """
 		tmp=\$(mktemp -p "${workspace}" -t ".jq-output")
-		docker run --rm -v "${workspace}:/wd" -w /wd stedolan/jq . "/wd/${input}" > "\$tmp"
+		docker run --rm -v "${workspace}:/wd" -w /wd ghcr.io/jqlang/jq:1.8.2. "/wd/${input}" > "\$tmp"
 		mv "\$tmp" "${workspace}/${output}"
 	"""
 }
