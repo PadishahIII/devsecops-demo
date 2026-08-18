@@ -618,8 +618,12 @@ def main() -> int:
     n_uniq = sum(len(v) for v in by_kind.values()) + len(licenses)
 
     status = decision.get("status", "pass")
-    badge = {"fail": "❌ GATE FAILED", "pass": "✅ GATE PASSED"}.get(status, status.upper())
-
+    badge = {
+        "fail": "❌ GATE FAILED",
+        "pass": "✅ GATE PASSED",
+        "warn": "⚠️ GATE WARN — review warnings",
+        "error": "⛔ GATE ERROR — could not evaluate",
+    }.get(status, status.upper())
     # license policy — same file the gate read (security/policy.yaml)
     import yaml
     lic_warn: set[str] = set()

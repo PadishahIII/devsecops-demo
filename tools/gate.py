@@ -7,6 +7,13 @@ one action per finding, writes:
   - audit/<file>.jsonl  (exception audit trail: applied / expired / unused)
 and exits non-zero if anything fails — that is what blocks the pipeline.
 
+Exit codes (status is also recorded in gate-decision.json):
+  0 = PASS  — no blocking findings
+  1 = WARN  — only warnings (map to UNSTABLE in CI)
+  2 = FAIL  — blocking findings
+  3 = ERROR — gate could not evaluate (absent findings/scan input).
+              Fail-closed: an unavailable scan must never pass the pipeline.
+
 Risk model (policy.yaml):
   severity defaults < KEV/EPSS overrides < tool overrides < exploitability
   class overrides < expiring exceptions. Severity alone is never the verdict.
@@ -30,8 +37,14 @@ from pydantic import BaseModel, Field, field_validator
 ACTION_ORDER = {"fail": 3, "warn": 2, "pass": 1}
 MAX_SEV = {"low": 1, "medium": 2, "high": 3, "critical": 4, "informational": 0, "unknown": 0}
 
+# status -> exit code. FAIL 2 / ERROR 3 both block; the split lets the
+# pipeline report *why* (policy verdict vs broken tooling) and map WARN
+# to UNSTABLE instead of FAILURE.
+STATUS_EXIT = {"pass": 0, "warn": 1, "fail": 2, "error": 3}
+
 Severity = Literal["critical", "high", "medium", "low", "informational", "unknown"]
 Action = Literal["fail", "warn", "pass"]
+Status = Literal["pass", "warn", "fail", "error"]
 
 
 class SeverityDefaults(BaseModel):
@@ -132,11 +145,29 @@ def main() -> int:
                     help="write the GATED findings stream here (each finding + action/reason) — the input for tools/report.py")
     ap.add_argument("--audit", default="audit/exceptions-audit.jsonl")
     args = ap.parse_args()
+
+    findings_path = Path(args.findings)
+    if not findings_path.is_file() or findings_path.stat().st_size == 0:
+        # Fail-closed: no findings stream = the gate could not evaluate.
+        # An empty scans dir (scan stage broke) must never look like a pass.
+        decision = {
+            "status": "error",
+            "date": dt.date.today().isoformat(),
+            "counts": {"total": 0, "fail": 0, "warn": 0, "pass": 0},
+            "failures": [],
+            "warnings": [],
+            "error": "missing findings input (normalize.py produced no findings.jsonl) — scan stage broken or empty",
+        }
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(json.dumps(decision, indent=2) + "\n")
+        print("gate: ERROR — no findings input; refusing to pass", file=sys.stderr)
+        return STATUS_EXIT["error"]
+
     policy = Policy.model_validate(yaml.safe_load(Path(args.policy).read_text()))
     exc_specs = yaml.safe_load(Path(args.exceptions).read_text()) or []
     exceptions = {e.fingerprint: e for e in (ExceptionSpec.model_validate(e) for e in exc_specs)}
 
-    findings = [json.loads(ln) for ln in Path(args.findings).read_text().splitlines() if ln.strip()]
+    findings = [json.loads(ln) for ln in findings_path.read_text().splitlines() if ln.strip()]
 
     fail_classes = [re.compile(p, re.IGNORECASE) for p in policy.fail_rule_classes]
     today = dt.date.today().isoformat()
@@ -210,7 +241,9 @@ def main() -> int:
 
     fails = [f for f in findings if f.get("action") == "fail"]
     warns = [f for f in findings if f.get("action") == "warn"]
-    status = "fail" if fails else "pass"
+    # An EMPTY findings stream is a legitimate pass (clean repo) —
+    # absent input is the error case, handled above.
+    status = "fail" if fails else ("warn" if warns else "pass")
 
     def _entry(f):
         return {"tool": f["tool"], "rule": f["rule"], "severity": f["severity"], "path": f["path"],
@@ -239,7 +272,7 @@ def main() -> int:
         print(f"  FAIL  [{f['tool']}/{f['severity']}] {f['rule']} @ {f['path']} — {f['reason']}")
     for f in warns:
         print(f"  WARN  [{f['tool']}/{f['severity']}] {f['rule']} @ {f['path']} — {f['reason']}")
-    return 1 if status == "fail" else 0
+    return STATUS_EXIT[status]
 
 
 if __name__ == "__main__":

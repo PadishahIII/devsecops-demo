@@ -75,3 +75,16 @@
   artifacts → 7 unique findings, gate FAIL 11/4/2.
 - Reuse: run the trio in order; exit 1 from gate still blocks (report runs with || true
   after it in Jenkins so the report renders even on failure).
+
+## 2026-08-18 — Gate owns the workflow status: WARN/FAIL/ERROR exit codes
+- Context: Jenkinsfile neutralized the gate with `|| true` and the gate only returned
+  1 on hard fail — the gate could never block, and a broken scan stage (absent
+  findings) silently passed as green.
+- Decision: gate.py now exits 0=pass / 1=warn / 2=fail / 3=error, recorded in
+  gate-decision.json.status. ABSENT findings input = ERROR (fail-closed, exit 3) —
+  an empty scans dir is never a pass; an EMPTY findings stream IS a legit pass.
+  Jenkinsfile reads the status back: fail/error -> error() (red), warn -> unstable()
+  (yellow), report always renders (python exit neutralized, no `|| true` needed).
+- Evidence: tools/gate.py (STATUS_EXIT, absent-input branch), Jenkinsfile
+  (gate + report stage), tools/report.py badges, docs/DESIGN.md §4.3.
+- Reuse: status is the contract between gate and CI; exit codes are the encoding.

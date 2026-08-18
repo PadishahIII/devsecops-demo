@@ -124,8 +124,12 @@ exceptions (exact fingerprint, expiring)  >  fail_rule_classes (injection/RCE…
 ```
 
 Outputs: `gate-decision.json` (status, per-finding action+reason, counts) and
-`audit/exceptions-audit.jsonl` (append-only). Exit code 1 = block. The gate runs
-**twice** (PR tier over source scans, main tier over image scan + ZAP) — same code.
+`audit/exceptions-audit.jsonl` (append-only). The **gate decides the workflow
+status**: exit 0 = PASS, 1 = WARN (CI maps to UNSTABLE), 2 = FAIL (block),
+3 = ERROR — absent findings input, fail-closed (a broken scan stage can never
+look like a clean pass). An *empty* findings stream is a legitimate pass. The
+gate runs **twice** (PR tier over source scans, main tier over image scan + ZAP)
+— same code.
 **Security gate design: severity, exploitability, reachability, exception process**
 
 ### Deploy

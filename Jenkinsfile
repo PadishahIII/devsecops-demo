@@ -121,14 +121,32 @@ pipeline {
 	stage('gate + report') {
 		steps {
 			// normalize -> gate (the single decision point) -> curated MD report
+			// The GATE decides the workflow status: fail/warn/error are read back
+			// from gate-decision.json and mapped to FAILURE / UNSTABLE / FAILURE.
+			// We neutralize the Python exit code so the report ALWAYS renders,
+			// even when the gate blocks.
 			sh '''
 			python3 tools/normalize.py reports --out findings.jsonl --raw-dir raw
 			python3 tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml \
-				--out gate-decision.json --findings-out gated.jsonl || true
-			python3 tools/report.py gated.jsonl gate-decision.json --out reports/security-report
+				--out gate-decision.json --findings-out gated.jsonl; rc=$?
+			python3 tools/report.py gated.jsonl gate-decision.json --out reports/security-report || true
+			exit 0
 			'''
+			// Map the gate's verdict onto the workflow status. ERROR (absent input)
+			// and FAIL (policy blocked) both fail the build; WARN -> UNSTABLE.
+			script {
+				def decision = readJSON file: 'gate-decision.json'
+				def status = decision.status ?: 'pass'
+				echo "gate verdict: ${status}"
+				if (status == 'fail' || status == 'error') {
+					error "gate ${status.toUpperCase()} — ${decision.error ?: decision.counts.fail + ' blocking finding(s)'}"
+				} else if (status == 'warn') {
+					unstable 'gate WARN — non-blocking warnings present'
+				}
+			}
 		}
 	}
+	    }
     }
 	post {
 		always {
