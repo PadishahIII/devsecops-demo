@@ -8,7 +8,8 @@
 </form>
 {% if authed %}
   <p>✅ Access granted. (legacy MD5-authenticated panel — see EXC-0042)</p>
+  <p class="muted"><a href="/logout">logout</a></p>
 {% else %}
-  <p class="muted">not authorized — supply the admin password.</p>
+  <p class="muted">not authorized — supply the admin password via <a href="/login">/login</a>.</p>
 {% endif %}
 {% endblock %}

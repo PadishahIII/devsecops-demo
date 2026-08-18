@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}login{% endblock %}
+{% block body %}
+<h1>login</h1>
+<p class="muted">Demo authentication — the pipeline exercises this surface with ZAP (DAST). The panel behind it uses the legacy MD5 check (EXC-0042).</p>
+<form method="get" action="/login">
+  <label>password<input type="password" name="password"></label>
+  <input type="submit" value="authenticate">
+</form>
+<p class="muted"><a href="/logout">logout</a></p>
+{% endblock %}
