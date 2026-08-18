@@ -128,7 +128,6 @@ pipeline {
 				--out gate-decision.json --findings-out gated.jsonl || true
 			python3 tools/report.py gated.jsonl gate-decision.json --out reports/security-report
 			'''
-			archiveArtifacts artifacts: 'reports/security-report/report.md, reports/security-report/raw/*', allowEmptyArchive: true
 		}
 	}
 	post {
@@ -143,6 +142,9 @@ pipeline {
 			archiveArtifacts artifacts: 'reports/grype.json', allowEmptyArchive: true, fingerprint: true
 
 			archiveArtifacts artifacts: 'reports/trivy.sarif', allowEmptyArchive: true, fingerprint: true
+
+			archiveArtifacts artifacts: 'reports/security-report/report.md', allowEmptyArchive: true
+
 		}
 		success { echo 'build OK' }
 		failure { echo 'build failed!' }
