@@ -128,9 +128,8 @@ pipeline {
 			sh '''
 			python3 tools/normalize.py reports --out findings.jsonl --raw-dir raw
 			python3 tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml \
-			--out gate-decision.json --findings-out gated.jsonl; rc=$?
+			--out gate-decision.json --findings-out gated.jsonl || true
 			python3 tools/report.py gated.jsonl gate-decision.json --out reports/security-report || true
-			exit 0
 			'''
 			// Map the gate's verdict onto the workflow status. ERROR (absent input)
 			// and FAIL (policy blocked) both fail the build; WARN -> UNSTABLE.
