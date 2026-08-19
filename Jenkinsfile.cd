@@ -9,14 +9,15 @@
 //   Trigger:         MANUAL (build with parameters) — choose BRANCH / PUSH_IMAGE / IMAGE_TAG
 //   Credentials:     Username/Password credential, id `dockerhub`
 //                    (Docker Hub username + password / access token)
-//   Shared library:  docker-cd (see deploy/jenkins/shared-libs/docker-cd/README)
+//
+// The build & push logic is inlined in this file — no shared library needed
+// (requires the Docker Pipeline plugin only).
 //
 // Tagging:
 //   default tag  <commit-sha8>-<BUILD_NUMBER>   — always, reproducible
 //   IMAGE_TAG    extra tag(s), comma-separated  — e.g. latest, v1.2.3
 //
 
-@Library('docker-cd') _
 
 properties([
     buildDiscarder(logRotator(numToKeepStr: '10', daysToKeepStr: '30')),
@@ -39,6 +40,8 @@ pipeline {
     }
 
     parameters {
+        string(name: 'REPOSITORY', defaultValue: 'padishahiii/devsecops-demo',
+               description: 'Docker Hub repository to push to')
         string(name: 'BRANCH', defaultValue: 'main',
                description: 'Git branch to build from')
         string(name: 'IMAGE_TAG', defaultValue: 'latest',
@@ -60,14 +63,39 @@ pipeline {
                 script {
                     def extra = env.IMAGE_TAG ? env.IMAGE_TAG.split(',').collect { it.trim() }.findAll { it } : []
                     echo "extra tags: ${extra}"
-                    dockerBuildPush(
-                        registry:   env.REGISTRY,
-                        repository: env.REPOSITORY,
-                        dockerfile: 'app/Dockerfile',
-                        context:    'app',
-                        tags:       extra,
-                        push:       env.PUSH_IMAGE.toBoolean(),
-                    )
+
+                    // default tag: <commit-sha8>-<BUILD_NUMBER> — always reproducible
+                    def commit = sh(script: 'git rev-parse --short=8 HEAD', returnStdout: true).trim()
+                    def buildNum = env.BUILD_NUMBER ?: '0'
+                    def tags = ["${commit}-${buildNum}"] + extra
+                    echo "tags: ${tags}"
+
+                    withRegistry("https://${env.REGISTRY}") {
+                        // login if credentials are bound; also covers private base-image pulls
+                        if (env.DOCKERHUB_CRED_USR && env.DOCKERHUB_CRED_PSW) {
+                            sh """
+                                set -e
+                                echo "\$DOCKERHUB_CRED_PSW" | docker login ${env.REGISTRY} --username "\$DOCKERHUB_CRED_USR" --password-stdin
+                            """
+                        }
+
+                        docker.build("${env.REPOSITORY}:${tags[0]}", "--file app/Dockerfile app")
+
+                        if (env.PUSH_IMAGE.toBoolean()) {
+                            if (!env.DOCKERHUB_CRED_USR || !env.DOCKERHUB_CRED_PSW) {
+                                error 'push requested but DOCKERHUB_CRED_USR/DOCKERHUB_CRED_PSW not set — bind a Username/Password credential (id `dockerhub`) in the pipeline'
+                            }
+                            // push the default tag, then re-tag + push each extra tag
+                            docker.image("${env.REPOSITORY}:${tags[0]}").push()
+                            for (tag in tags.tail()) {
+                                sh "docker tag ${env.REPOSITORY}:${tags[0]} ${env.REGISTRY}/${env.REPOSITORY}:${tag}"
+                                docker.image("${env.REGISTRY}/${env.REPOSITORY}:${tag}").push()
+                            }
+                        }
+                    }
+
+                    env.DOCKER_IMAGE = "${env.REGISTRY}/${env.REPOSITORY}:${tags[0]}"
+                    echo "image: ${env.DOCKER_IMAGE}"
                 }
             }
         }
