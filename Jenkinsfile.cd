@@ -70,7 +70,7 @@ pipeline {
                     def tags = ["${commit}-${buildNum}"] + extra
                     echo "tags: ${tags}"
 
-                    withRegistry("https://${env.REGISTRY}") {
+                    docker.withRegistry("https://${env.REGISTRY}") {
                         // login if credentials are bound; also covers private base-image pulls
                         if (env.DOCKERHUB_CRED_USR && env.DOCKERHUB_CRED_PSW) {
                             sh """
