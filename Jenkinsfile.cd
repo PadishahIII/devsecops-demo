@@ -15,8 +15,6 @@
 //   default tag  <commit-sha8>-<BUILD_NUMBER>   — always, reproducible
 //   IMAGE_TAG    extra tag(s), comma-separated  — e.g. latest, v1.2.3
 //
-// NOTE: Jenkins does not auto-discover Jenkinsfile.cd — the job must reference
-// the file path explicitly. Only the default `Jenkinsfile` is picked up from SCM.
 
 @Library('docker-cd') _
 
@@ -30,8 +28,8 @@ pipeline {
 
     environment {
         // Bound from the Username/Password credential `dockerhub` (Credentials Binding)
-        DOCKERHUB_USERNAME = credentials('dockerhub')   // actually USERNAME part
-        DOCKERHUB_PASSWORD = credentials('dockerhub')   // actually PASSWORD part
+        DOCKERHUB_USERNAME = credentials('dockerhub-user')   // actually USERNAME part
+        DOCKERHUB_PASSWORD = credentials('dockerhub-pass')   // actually PASSWORD part
         // Explicit registry — avoids ambiguity with `docker.io` in withDockerRegistry
         REGISTRY = 'docker.io'
     }
