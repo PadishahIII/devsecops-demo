@@ -16,11 +16,11 @@
 //   extraTag   = 'latest' on main             (caller decides)
 //
 // Credentials: expects a Username/Password credential bound into the
-// environment as DOCKERHUB_USERNAME / DOCKERHUB_PASSWORD (see Jenkinsfile.cd).
+// environment as DOCKERHUB_CRED_USR / DOCKERHUB_CRED_PSW (see Jenkinsfile.cd).
 // Uses the Docker Pipeline plugin (`docker` global) — requires that plugin.
 //
 // Registry login:
-//   - if DOCKERHUB_USERNAME/DOCKERHUB_PASSWORD are set, logs in via the docker CLI
+//   - if DOCKERHUB_CRED_USR/DOCKERHUB_CRED_PSW are set, logs in via the docker CLI
 //     (stdin) before building, so both build (base image pulls) and push work.
 //   - otherwise builds only; push errors out with a clear message.
 
@@ -50,10 +50,10 @@ def call(Map args) {
     // withRegistry('https://docker.io') matches the default registry context.
     withRegistry("https://${registry}") {
         // login if we have credentials; this also covers private base-image pulls
-        if (env.DOCKERHUB_USERNAME && env.DOCKERHUB_PASSWORD) {
+        if (env.DOCKERHUB_CRED_USR && env.DOCKERHUB_CRED_PSW) {
             sh """
                 set -e
-                echo "\$DOCKERHUB_PASSWORD" | docker login ${registry} --username "\$DOCKERHUB_USERNAME" --password-stdin
+                echo "\$DOCKERHUB_CRED_PSW" | docker login ${registry} --username "\$DOCKERHUB_CRED_USR" --password-stdin
             """
         }
 
@@ -64,8 +64,8 @@ def call(Map args) {
         }
 
         if (shouldPush) {
-            if (!env.DOCKERHUB_USERNAME || !env.DOCKERHUB_PASSWORD) {
-                error 'dockerBuildPush: push requested but DOCKERHUB_USERNAME/DOCKERHUB_PASSWORD not set — bind a Username/Password credential (id `dockerhub`) in the pipeline'
+            if (!env.DOCKERHUB_CRED_USR || !env.DOCKERHUB_CRED_PSW) {
+                error 'dockerBuildPush: push requested but DOCKERHUB_CRED_USR/DOCKERHUB_CRED_PSW not set — bind a Username/Password credential (id `dockerhub`) in the pipeline'
             }
             stage("Docker push ${repository}") {
                 // push default tag, then re-tag + push each extra tag

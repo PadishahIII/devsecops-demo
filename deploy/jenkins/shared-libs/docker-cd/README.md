@@ -31,7 +31,7 @@ dockerBuildPush(
 - Resolves the git commit (`git rev-parse --short=8 HEAD`) and build number itself,
   so every image is tagged `<sha8>-<BUILD_NUMBER>` — reproducible and traceable.
 - `tags` are extra tags added on top of the default.
-- Pushes via `docker login` (stdin) using `DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD`
+- Pushes via `docker login` (stdin) using `DOCKERHUB_CRED_USR` / `DOCKERHUB_CRED_PSW`
   bound from a Jenkins **Username/Password** credential (id `dockerhub`).
 - Requires the **Docker Pipeline** plugin (`withDockerRegistry`, `docker.build`,
   `docker.push` steps) and **Credentials Binding** (bundled).

@@ -28,8 +28,7 @@ pipeline {
 
     environment {
         // Bound from the Username/Password credential `dockerhub` (Credentials Binding)
-        DOCKERHUB_USERNAME = credentials('dockerhub-user')   // actually USERNAME part
-        DOCKERHUB_PASSWORD = credentials('dockerhub-pass')   // actually PASSWORD part
+        DOCKERHUB_CRED = credentials('dockerhub')   
         // Explicit registry — avoids ambiguity with `docker.io` in withDockerRegistry
         REGISTRY = 'docker.io'
     }
