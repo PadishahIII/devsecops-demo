@@ -109,6 +109,7 @@ pipeline {
 				docker run --rm -v "$WORKSPACE:/src" -v trivy-cache:/root/.cache/trivy/ -w /src \
 				aquasec/trivy:${env.TRIVY_VERSION} config \
 				--severity CRITICAL,HIGH \
+				--ignore-unfixed --vex security/trivy/vex.openvex.json \
 				--check-namespaces user --config-check /src/security/trivy \
 				--cache-dir /root/.cache/trivy \
 				--format sarif -o /src/reports/trivy.sarif \

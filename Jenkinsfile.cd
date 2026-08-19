@@ -1,0 +1,91 @@
+// Jenkinsfile.cd — build & push the devsecops-demo Docker image to Docker Hub.
+//
+// Companion to Jenkinsfile.ci (SAST/SCA/IaC gates). This pipeline builds the
+// image from app/Dockerfile and pushes it to Docker Hub.
+//
+// Configuration:
+//   Job type:        Pipeline (not Multibranch) pointing at Jenkinsfile.cd
+//   SCM:             this repository, branch main
+//   Trigger:         MANUAL (build with parameters) — choose BRANCH / PUSH_IMAGE / IMAGE_TAG
+//   Credentials:     Username/Password credential, id `dockerhub`
+//                    (Docker Hub username + password / access token)
+//   Shared library:  docker-cd (see deploy/jenkins/shared-libs/docker-cd/README)
+//
+// Tagging:
+//   default tag  <commit-sha8>-<BUILD_NUMBER>   — always, reproducible
+//   IMAGE_TAG    extra tag(s), comma-separated  — e.g. latest, v1.2.3
+//
+// NOTE: Jenkins does not auto-discover Jenkinsfile.cd — the job must reference
+// the file path explicitly. Only the default `Jenkinsfile` is picked up from SCM.
+
+@Library('docker-cd') _
+
+properties([
+    buildDiscarder(logRotator(numToKeepStr: '10', daysToKeepStr: '30')),
+    disableConcurrentBuilds(),
+])
+
+pipeline {
+    agent any
+
+    environment {
+        // Bound from the Username/Password credential `dockerhub` (Credentials Binding)
+        DOCKERHUB_USERNAME = credentials('dockerhub')   // actually USERNAME part
+        DOCKERHUB_PASSWORD = credentials('dockerhub')   // actually PASSWORD part
+        // Explicit registry — avoids ambiguity with `docker.io` in withDockerRegistry
+        REGISTRY = 'docker.io'
+    }
+
+    options {
+        timestamps()
+        timeout(time: 20, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(name: 'BRANCH', defaultValue: 'main',
+               description: 'Git branch to build from')
+        string(name: 'IMAGE_TAG', defaultValue: 'latest',
+               description: 'Extra image tags to push, comma-separated (default tag is <sha8>-<BUILD_NUMBER>)')
+        booleanParam(name: 'PUSH_IMAGE', defaultValue: true,
+                     description: 'Push the image to Docker Hub after building')
+    }
+
+    stages {
+        stage('checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('build & push image') {
+            steps {
+                // resolve the extra tags from the IMAGE_TAG parameter
+                script {
+                    def extra = env.IMAGE_TAG ? env.IMAGE_TAG.split(',').collect { it.trim() }.findAll { it } : []
+                    echo "extra tags: ${extra}"
+                    dockerBuildPush(
+                        registry:   env.REGISTRY,
+                        repository: env.REPOSITORY,
+                        dockerfile: 'app/Dockerfile',
+                        context:    'app',
+                        tags:       extra,
+                        push:       env.PUSH_IMAGE.toBoolean(),
+                    )
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // print the resolved image name for downstream consumers
+            script {
+                if (env.DOCKER_IMAGE) {
+                    echo "image: ${env.DOCKER_IMAGE}"
+                }
+            }
+        }
+        success { echo 'CD OK — image built and pushed' }
+        failure { echo 'CD FAILED' }
+    }
+}
