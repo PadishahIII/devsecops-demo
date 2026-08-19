@@ -16,7 +16,6 @@
 // Tagging:
 //   default tag  <commit-sha8>-<BUILD_NUMBER>   — always, reproducible
 //   IMAGE_TAG    extra tag(s), comma-separated  — e.g. latest, v1.2.3
-//
 
 
 properties([
