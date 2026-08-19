@@ -17,8 +17,6 @@ Reduce Trivy false positives by combining two mechanisms:
 2. `--vex /path/to/vex.json` — maintain a VEX policy as the auditable,
    evidence-carrying way to suppress a _known, fixable_ vulnerability.
 
-        		--ignore-status affected,will_not_fix,fix_deferred,end_of_life \
-
    **Operation**: try **fix forward first** — upgrade the dependency or pin
    to the patched version. Resort to a VEX statement only when a forward fix
    is breaking (incompatible upgrade, no patched release) or the vulnerable

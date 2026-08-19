@@ -167,8 +167,8 @@ pipeline {
 		}
 		success { echo 'build OK' }
 		failure { echo 'build failed!' }
-		// cleanup {
-		// 	cleanWs() // Workspace Cleanup Plugin
-		// }
+		cleanup {
+			cleanWs() // Workspace Cleanup Plugin
+		}
 	}
 }
