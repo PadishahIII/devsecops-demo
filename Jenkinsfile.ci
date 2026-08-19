@@ -51,7 +51,7 @@ pipeline {
 		steps {
 			sh 'mkdir -p reports'
 			// continue on error, only for test
-			catchError {
+			catchError (buildResult: 'SUCCESS', stageResult: 'FAILURE') {
 				sh """
 				docker run --rm -v "$WORKSPACE:/src" -w /src \
 					zricethezav/gitleaks:${env.GITLEAKS_VERSION} \
@@ -68,7 +68,7 @@ pipeline {
 	stage('SAST - semgrep') {
 		steps {
 			// continue on error, only for test
-			catchError {
+			catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE')  {
 				sh """
 				docker run --rm -v "$WORKSPACE:/src" -w /src \
 					semgrep/semgrep:${env.SEMGREP_VERSION} \
@@ -85,7 +85,7 @@ pipeline {
 	}
 	stage('SCA - syft+grype') {
 		steps {
-			catchError {
+			catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE')  {
 				sh """
 				docker run --rm -v "$WORKSPACE:/src" -w /src \
 				anchore/syft:${env.SYFT_VERSION} scan dir:. \
@@ -104,7 +104,7 @@ pipeline {
 	}
 	stage('IaC - trivy') {
 		steps {
-			catchError {
+			catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
 				sh """
 				docker run --rm -v "$WORKSPACE:/src" -v trivy-cache:/root/.cache/trivy/ -w /src \
 				aquasec/trivy:${env.TRIVY_VERSION} config \
@@ -140,13 +140,11 @@ pipeline {
 				def parsed = new groovy.json.JsonSlurper().parseText(decision)
 				def status = parsed.status ?: 'pass'
 				echo "gate verdict: ${status}"
-				// if (status == 'fail' || status == 'error') {
-				// 	error "gate ${status.toUpperCase()} — ${parsed.error ?: parsed.counts.fail + ' blocking finding(s)'}"
-				// } else if (status == 'warn') {
-				// 	unstable 'gate WARN — non-blocking warnings present'
-				// }
-				// NOTE: debug
-				currentBuild.result = 'SUCCESS'
+				if (status == 'fail' || status == 'error') {
+					error "gate ${status.toUpperCase()} — ${parsed.error ?: parsed.counts.fail + ' blocking finding(s)'}"
+				} else if (status == 'warn') {
+					unstable 'gate WARN — non-blocking warnings present'
+				}
 			}
 		}
 	}
