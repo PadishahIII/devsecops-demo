@@ -1,0 +1,22 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/PadishahIII/devsecops-demo/security/trivy/vex.openvex.json",
+  "author": "http://openvex.dev/docs/publisher/example",
+  "timestamp": "2026-08-19T00:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2024-6827"
+      },
+      "products": [
+        {
+          "@id": "pkg:pypi/gunicorn@21.2.0"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Demo-only deployment behind the local gateway: the gunicorn worker is only reachable through the Jenkins pipeline's internal proxy, which terminates the HTTP connection, so the Transfer-Encoding request-smuggling path is never exercised. Accepted as not_affected until the image is rebuilt with the 22.0.0 pin (design decision #5)."
+    }
+  ]
+}

@@ -109,3 +109,11 @@
 - Reuse: before adding/removing ANY line above app.py:43, re-verify the
   fingerprint; run `python tools/normalize.py + gate.py` on a scan dir as the
   exception regression test.
+
+## 2026-08-19 — VEX demo: seeded gunicorn CVE + OpenVEX not_affected (bd devsecops-demo-836)
+
+- Context: Repo needed a VEX story; docs/DESIGN.md §4.1 seed #5 was broken — it claimed gunicorn==22.0.0 as "the seeded critical" for CVE-2024-6827, but 22.0.0 is the FIXED version, so no scanner ever fired.
+- Decision: Pin `app/requirements.txt` to `gunicorn==21.2.0` (vulnerable, fix 22.0.0) so Trivy fs reports CVE-2024-6827 CRITICAL, then ignore it with an OpenVEX document at `security/trivy/vex.openvex.json` (`status: not_affected`, `justification: vulnerable_code_not_in_execute_path`, PURL `pkg:pypi/gunicorn@21.2.0`).
+- Memory: Trivy filters VEX'd vulns at scan time (`--vex file`), logs `Filtered out the detected vulnerability {"VEX format": "OpenVEX", ...}`; OpenVEX covers the fs target (CycloneDX VEX needs an SBOM + BOM-Links). VEX ≠ `.trivyignore`: it carries status/justification/impact_statement and is tool-agnostic.
+- Evidence: trivy.dev/docs/v0.51/guide/supply-chain/vex/; docs/DESIGN.md rows updated; docs/VEX.md walkthrough; JSON validated.
+- Reuse: run `trivy fs --scanners vuln --severity CRITICAL,HIGH [--vex security/trivy/vex.openvex.json] app/requirements.txt` to demonstrate; the VEX pin stays the same while the accepted-risk story is told.

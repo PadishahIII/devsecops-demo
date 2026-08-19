@@ -40,6 +40,14 @@ Jenkins
 -> Vulns go into vuln management platform.
 -> Manage metrics.
 
+Defer image-scan and SBOM check to CD, or use `trivy --ignore-unfixed`.
+
+**Trivy FP reduction**
+
+- use `--ignore-unfixed` and `--vex /path/to/vex.json`, maintain a vex policy.
+  The operation is, try fix forward first, resort to vex only if forward fix is breaking or non-reachable with clear justification.
+- warn in CI, block in CD
+
 **tech stack**
 
 - Jenkins: to run pipelines, use GKE or other free tier cloud provider to serve Jenkins
@@ -74,3 +82,7 @@ discover → triage → SLA → fix → verify → exception
 - [ ] Extend demo repos and design metrics
 - [ ] Add AI triage and add metrics
 - [ ] Design and implement more complex gates
+
+**Documentation**
+
+- the decisions around the tools are better demonstration than just the tools work

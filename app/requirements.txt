@@ -1,2 +1,2 @@
 flask==3.0.3
-gunicorn==22.0.0
+gunicorn==21.2.0  # CVE-2024-6827 seed — vulnerable, fixed in 22.0.0; see docs/VEX.md
