@@ -102,10 +102,13 @@ pipeline {
 
     post {
         always {
-            // print the resolved image name for downstream consumers
+            // print the resolved image name for downstream consumers, then clean up
+            // the locally built image (only meaningful when an image was pushed;
+            // PUSH_IMAGE=false keeps the image on the agent for manual use)
             script {
                 if (env.DOCKER_IMAGE) {
                     echo "image: ${env.DOCKER_IMAGE}"
+                    sh "docker rmi ${env.DOCKER_IMAGE}"
                 }
             }
         }
