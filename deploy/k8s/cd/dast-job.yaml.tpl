@@ -5,14 +5,20 @@
 # no host.docker.internal gymnastics).
 #
 # Notes on the design:
-#   * the scan script is invoked by relative name — the zaproxy:stable image
-#     puts zap-baseline.py in /zap/ which is on PATH (Dockerfile-stable).
+#   * the scan script is invoked by relative name — the zaproxy image puts
+#     zap-baseline.py in /zap/ which is on PATH (Dockerfile-stable).
 #   * the container exits 0 even when ZAP reports findings: the scan's own
 #     verdict is captured to zap-exit.txt and the PIPELINE GATE decides.
 #     backoffLimit 0 means we never silently retry a broken scan; a missing
 #     zap-report.json makes the pipeline fail closed.
-#   * default image user is `zap` (uid 1000); runAsUser matches it so the
-#     mounted /zap/wrk emptyDir (world-writable) is usable.
+#   * REPORT RETRIEVAL: /zap/wrk is a hostPath dir INSIDE the kind node
+#     container (${DAST_REPORTS_HOST_DIR}) — in kind, hostPath resolves in the
+#     node container's fs, not the physical host. kubectl cp is exec-based and
+#     CANNOT read from a completed pod (kubernetes#111045), so the report must
+#     survive container exit; the Jenkinsfile pulls it out of the node container
+#     with `docker cp` (agent and node share the host). The Jenkinsfile also
+#     pre-creates the dir (mode 777) so the zap user (uid 1000) can write it.
+#   * default image user is `zap` (uid 1000); runAsUser matches it.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -34,9 +40,12 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: zap
-          image: ghcr.io/zaproxy/zaproxy:stable
+          # pinned by digest (the :stable tag is a moving target)
+          image: ghcr.io/zaproxy/zaproxy:stable@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -45,6 +54,10 @@ spec:
               zap-baseline.py -t ${DAST_URL} -l WARN \
                 -J /zap/wrk/zap-report.json -r /zap/wrk/zap-report.html \
                 || echo "zap exit=$? (gate decides)" | tee /zap/wrk/zap-exit.txt
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
             - name: wrk
               mountPath: /zap/wrk
@@ -57,4 +70,6 @@ spec:
               memory: 1Gi
       volumes:
         - name: wrk
-          emptyDir: {}
+          hostPath:
+            path: ${DAST_REPORTS_HOST_DIR}
+            type: DirectoryOrCreate

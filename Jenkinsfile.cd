@@ -8,22 +8,28 @@
 //
 // Configuration:
 //   Job type:        Multibranch Pipeline pointing at Jenkinsfile.cd (branch main)
-//   Trigger:         MANUAL (build with parameters) — ENVIRONMENT / APP_VERSION /
-//                    RUN_DAST / PROMOTE_TO_PROD decide the run, see `parameters`
+//   Trigger:         MANUAL (build with parameters). Common runs:
+//     * deploy to staging:    ENVIRONMENT=staging,    PROMOTE_TO_PROD=false
+//     * hotfix to production: ENVIRONMENT=production, PROMOTE_TO_PROD=false
+//                             (skips staging — deploys straight to prod)
+//     * staging → production: ENVIRONMENT=staging,    PROMOTE_TO_PROD=true
+//                             (promotes the SAME digest after gate + verification)
 //   Credentials (CREATE THESE IN JENKINS):
 //     dockerhub            Username/Password — Docker Hub user + token
 //     cosign-key           File — cosign private key
 //     cosign-pub           File — cosign public key
 //     kind-kubeconfig      File — kubeconfig of the kind cluster on the node
-//     app-secret-key       Secret text — the app's APP_SECRET_KEY
-//     admin-password-hash  Secret text — the app's ADMIN_PASSWORD_HASH
 //   Requirements:        a kind cluster on the Jenkins node (kubectl + KUBECONFIG),
-//                        Docker Hub repo (public or private — regcred is created).
+//                        the agent sharing a Docker daemon with the kind node
+//                        (DAST report retrieval uses `docker cp` from the node
+//                        container — see KIND_NODE), and a Docker Hub repo
+//                        (public or private — regcred is created).
 //
 // Pipeline shape (happy path, ENVIRONMENT=staging + PROMOTE_TO_PROD=true):
 //   cleanup → checkout → init → build & push (3 tags) → SBOM → trivy →
 //   image gate → cosign sign+verify → deploy staging → ZAP DAST (in-cluster
-//   Job) → VULN GATE (static + DAST, gate-decision-dast.json) →
+//   Job; report pulled from the kind node via docker cp) →
+//   VULN GATE (static + DAST, gate-decision-dast.json) →
 //   post-deployment verification → [input] → deploy production (same digest)
 //
 // Designs borrowed from sample (see sample in repo root):
@@ -39,11 +45,11 @@
 //   primary   <commit-sha8>-<BUILD_NUMBER>  — always, reproducible (digest source)
 //   latest                                   — always, convenience pointer
 //   <APP_VERSION>                            — always, versioned pointer
-
+//
 def pretty_json(String workspace, String input, String output) {
 	sh """
 		set -e
-		tmp=\$(mktemp -p "${workspace}" -t ".jq-output")
+		tmp=\$(mktemp "${workspace}/.jq-output.XXXXXX")
 		docker run --rm -v "${workspace}:/wd" -w /wd ghcr.io/jqlang/jq:1.8.2 . "/wd/${input}" > "\$tmp"
 		mv "\$tmp" "${workspace}/${output}"
 	"""
@@ -54,7 +60,20 @@ def pretty_json(String workspace, String input, String output) {
 // the human report, then enforce the verdict (fail/error → abort, warn →
 // unstable). The promotion gate gets a distinct decision/report set so the
 // image gate's verdict stays archived even after DAST findings arrive.
-def runGate(String decisionFile, String gatedFile, String reportDir) {
+//
+// `expected` lists the scanner artifacts this gate MUST have seen. The gate
+// only evaluates what normalize.py found in reports/ — so a broken/absent
+// scan is caught HERE, fail-closed (an empty findings stream alone is not
+// enough: SBOM license findings keep the stream non-empty even when trivy
+// died, which would otherwise let an unscanned image through).
+def runGate(String decisionFile, String gatedFile, String reportDir, List<String> expected = []) {
+	def missing = expected.findAll { p ->
+		def f = new File(p)
+		!f.isFile() || f.length() == 0
+	}
+	if (missing) {
+		error "gate ERROR — missing scanner artifact(s): ${missing.join(', ')} — a broken/absent scan must never look like a pass"
+	}
 	sh """
 		python3 tools/normalize.py reports --out findings.jsonl --raw-dir raw
 		python3 tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml \
@@ -66,7 +85,7 @@ def runGate(String decisionFile, String gatedFile, String reportDir) {
 		def parsed = new groovy.json.JsonSlurper().parseText(decision)
 		def status = parsed.status ?: 'pass'
 		echo "gate verdict: ${status} — ${parsed.counts.fail} fail / ${parsed.counts.warn} warn / ${parsed.counts.pass} pass"
-		if (parsed.counts.dast) {
+		if (parsed.counts.dast && (parsed.counts.dast.total ?: 0) > 0) {
 			echo "DAST verdict: ${parsed.counts.dast.fail} fail / ${parsed.counts.dast.warn} warn / ${parsed.counts.dast.pass} pass (tracked separately)"
 		}
 		if (status == 'fail' || status == 'error') {
@@ -89,16 +108,9 @@ def renderManifest(String name, Map vars) {
 	return rendered
 }
 
-// base64 of an environment variable's value (credentials binding exports these
-// to sh subprocesses) — used to fill the secret templates without the value
-// ever appearing in the Jenkinsfile itself.
-def b64FromEnv(String envName) {
-	return sh(script: "printf %s \"\$${envName}\" | base64 -w0", returnStdout: true).trim()
-}
-
 // Idempotent bootstrap of a deploy namespace on the kind cluster. ALL objects
 // are versioned templates in deploy/k8s/cd/ (namespace, Docker Hub pull
-// secret, app runtime secrets) — dynamic values are injected at render time.
+// secret) — dynamic values are injected at render time.
 def ensureNamespace(String ns, String envName) {
 	def dockerCfgJsonB64 = sh(script: '''
 		python3 -c "import base64,json,os; auth=base64.b64encode((os.environ['DOCKERHUB_CRED_USR']+':'+os.environ['DOCKERHUB_CRED_PSW']).encode()).decode(); cfg={'auths':{os.environ['REGISTRY']:{'username':os.environ['DOCKERHUB_CRED_USR'],'password':os.environ['DOCKERHUB_CRED_PSW'],'auth':auth}}}; print(base64.b64encode(json.dumps(cfg).encode()).decode())"
@@ -106,11 +118,6 @@ def ensureNamespace(String ns, String envName) {
 	def objects = [
 		renderManifest('namespace.yaml.tpl', [NS: ns, ENV: envName]),
 		renderManifest('regcred.yaml.tpl', [NS: ns, DOCKERCONFIGJSON_B64: dockerCfgJsonB64]),
-		renderManifest('notes-secret.yaml.tpl', [
-			NS: ns,
-			APP_SECRET_KEY_B64: b64FromEnv('APP_SECRET_KEY'),
-			ADMIN_PASSWORD_HASH_B64: b64FromEnv('ADMIN_PASSWORD_HASH'),
-		]),
 	]
 	sh "kubectl apply -f " + objects.join(" -f ")
 }
@@ -146,18 +153,23 @@ pipeline {
 		REGISTRY = 'docker.io'
 		SYFT_VERSION = "v1.51.0"
 		TRIVY_VERSION = "0.74.0"
-		COSIGN_VERSION = "sha256:3b59b946b038b65a1fdb74f7248e3171289d1b9631c69eed603a2617218448fc"
+		COSIGN_VERSION = "sha256:e275eeadd120e2f9c72167f2ccc4b1516ef6400980fe8e449c23293859fbb2ef"
 		// must stay true: digest/sign/verify stages require the image to be on the registry
 		PUSH_IMAGE = true
-		// CD: kind cluster on the Jenkins node + app runtime secrets
+		// CD: kind cluster on the Jenkins node
 		KUBECONFIG = credentials('kind-kubeconfig')           // File credential
-		APP_SECRET_KEY = credentials('app-secret-key')        // Secret text
-		ADMIN_PASSWORD_HASH = credentials('admin-password-hash') // Secret text
+		// kind node container on this host (default cluster name `kind` —
+		// adjust if the cluster was created with a custom name). Used to pull
+		// the DAST report out of the node (hostPath lives in the node container).
+		KIND_NODE = 'kind-control-plane'
 	}
 
 	options {
 		timestamps()
-		timeout(time: 45, unit: 'MINUTES')
+		// covers the whole build INCLUDING the production approval wait
+		// (input): the pre-approval path takes up to ~35 min worst case
+		// (15 min DAST ceiling included), leaving a generous approval window
+		timeout(time: 90, unit: 'MINUTES')
 	}
 
 	parameters {
@@ -165,13 +177,13 @@ pipeline {
 		       description: 'Docker Hub repository to push to')
 		choice(name: 'ENVIRONMENT',
 		       choices: ['staging', 'production'],
-		       description: 'Primary deploy target. production requires PROMOTE_TO_PROD=true (hotfix path — skips staging)')
+		       description: 'Deploy target. staging = normal path; production = hotfix path (deploys straight to prod, skips staging)')
 		string(name: 'APP_VERSION', defaultValue: '1.0.0',
-		       description: 'Application version — also used as an immutable image tag (valid docker tag required)')
+		       description: 'Application version — also used as an immutable image tag (valid docker tag required, ≤63 chars: it is a k8s label value)')
 		booleanParam(name: 'RUN_DAST', defaultValue: true,
-		             description: 'Run the in-cluster ZAP baseline scan after deploy; results feed the promotion gate')
+		             description: 'Run the in-cluster ZAP baseline scan after the staging deploy; results feed the promotion gate (never run against production)')
 		booleanParam(name: 'PROMOTE_TO_PROD', defaultValue: false,
-		             description: 'Promote the SAME digest to production after the vuln gate + verification pass')
+		             description: 'staging only: after the vuln gate + verification pass, promote the SAME digest to production (manual approval)')
 	}
 
 	stages {
@@ -189,14 +201,24 @@ pipeline {
 		stage('Initialize') {
 			steps {
 				script {
-					if (params.ENVIRONMENT == 'production' && !params.PROMOTE_TO_PROD) {
-						error 'production deployment requires PROMOTE_TO_PROD=true'
+					if (params.ENVIRONMENT == 'production' && params.PROMOTE_TO_PROD) {
+						error 'PROMOTE_TO_PROD only applies to ENVIRONMENT=staging (staging → production). For a direct production hotfix use ENVIRONMENT=production with PROMOTE_TO_PROD=false.'
 					}
 					if (!(params.APP_VERSION ==~ /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/)) {
 						error "APP_VERSION '${params.APP_VERSION}' is not a valid Docker tag"
 					}
+					if (params.APP_VERSION.length() > 63) {
+						error "APP_VERSION '${params.APP_VERSION}' exceeds 63 chars — it is used as a k8s label value (max 63)"
+					}
 					echo "target: ${params.ENVIRONMENT} | version: ${params.APP_VERSION} | DAST: ${params.RUN_DAST} | promote: ${params.PROMOTE_TO_PROD}"
 				}
+				// gate tools (normalize/gate/report) need pydantic + pyyaml —
+				// install only if the node's python lacks them
+				sh '''
+					python3 -c "import pydantic, yaml" 2>/dev/null || \
+						python3 -m pip install --quiet --user -r tools/requirements.txt || \
+						python3 -m pip install --quiet --user --break-system-packages -r tools/requirements.txt
+				'''
 			}
 		}
 
@@ -264,6 +286,10 @@ pipeline {
 
 		stage('Image Scan - trivy') {
 			steps {
+				// catchError marks the build red if the scanner itself breaks, but
+				// the pipeline continues so the gate stage can report WHY — and the
+				// gate's missing-artifact check fails closed before anything is
+				// signed or deployed (a broken scan must never look like a pass).
 				catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
 					sh """
 						docker run --rm -v "$WORKSPACE:/src" -v trivy-cache:/root/.cache/trivy/ -w /src \
@@ -283,7 +309,7 @@ pipeline {
 
 		stage('gate + report') {
 			steps {
-				script { runGate('gate-decision.json', 'gated.jsonl', 'reports/security-report') }
+				script { runGate('gate-decision.json', 'gated.jsonl', 'reports/security-report', ['reports/trivy.sarif', 'reports/sbom.cdx.image.json']) }
 			}
 		}
 
@@ -334,9 +360,8 @@ pipeline {
 		// =================== CD HALF: DEPLOY → DAST → GATE → VERIFY → PROMOTE ===================
 
 		stage('Deploy') {
-			// staging is the default target; ENVIRONMENT=production (with
-			// PROMOTE_TO_PROD) is the hotfix path and deploys straight to prod.
-			when { expression { params.ENVIRONMENT == 'staging' || params.PROMOTE_TO_PROD } }
+			// deploys to demo-<ENVIRONMENT>: staging for the normal path,
+			// demo-production for the hotfix path (ENVIRONMENT=production)
 			steps {
 				script {
 					def ns = "demo-${params.ENVIRONMENT}"
@@ -350,54 +375,80 @@ pipeline {
 		}
 
 		stage('DAST - ZAP in-cluster') {
-			when { expression { params.RUN_DAST } }
+			// Active DAST is intentionally NOT run against production (aggressive
+			// scans on a live prod service); the hotfix path is gated on static
+			// findings + post-deployment verification instead.
+			when { expression { params.RUN_DAST && params.ENVIRONMENT == 'staging' } }
 			steps {
 				script {
 					def ns = "demo-${params.ENVIRONMENT}"
 					def dastUrl = "http://notes.${ns}.svc.cluster.local:80"
-					echo "scanning ${dastUrl} with in-cluster ZAP baseline"
+					// The Job writes its report to a hostPath dir INSIDE the kind
+					// node container (in kind, hostPath = the node container's fs).
+					// kubectl cp is exec-based and CANNOT read from a completed pod
+					// (kubernetes#111045), so the report must survive container
+					// exit — then it is pulled out of the node container with
+					// docker cp (agent and node share the host).
+					// NOTE: the dir must live on the node's rootfs, NOT under /tmp —
+					// the node's /tmp is a tmpfs mounted INSIDE the container, which
+					// the outer Docker daemon (docker cp) cannot see.
+					def hostDir = "/devsecops-demo/dast-${ns}"
+					echo "scanning ${dastUrl} with in-cluster ZAP baseline (report via ${env.KIND_NODE}:${hostDir})"
 					def job = renderManifest('dast-job.yaml.tpl', [
 						NS: ns, ENV: params.ENVIRONMENT, DAST_URL: dastUrl, BUILD_NUMBER: env.BUILD_NUMBER,
+						DAST_REPORTS_HOST_DIR: hostDir,
 					])
+					sh """
+						set -euo pipefail
+						# pre-create the report dir in the node container (ZAP runs as uid 1000)
+						docker exec "${env.KIND_NODE}" rm -rf "${hostDir}"
+						docker exec "${env.KIND_NODE}" mkdir -p "${hostDir}"
+						docker exec "${env.KIND_NODE}" chmod 777 "${hostDir}"
+						# never adopt a stale Job left behind by a previous build
+						kubectl delete job dast-scan -n ${ns} --ignore-not-found --wait=true || true
+						kubectl apply -f ${job}
+					"""
+					// bounded wait for completion; a scan that never completes fails
+					// the stage (no report -> fail-closed below). The GATE decides
+					// verdicts, never ZAP's own exit code.
+					timeout(time: 20, unit: 'MINUTES') {
 						sh """
 							set -euo pipefail
-							kubectl apply -f ${job}
-							# bounded wait for a terminal state (Complete OR Failed); the GATE decides,
-							# never the scanner's own exit code. 60 x 15s = 15 min ceiling.
-							deadline=\$((SECONDS + 900))
-							while [ "\$SECONDS" -lt "\$deadline" ]; do
-								failed=\$(kubectl get job dast-scan -n ${ns} -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || true)
-								succeeded=\$(kubectl get job dast-scan -n ${ns} -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
-								if [ "\$failed" = "True" ] || [ "\$succeeded" = "1" ]; then
-									break
-								fi
-								sleep 15
-							done
-							kubectl get job dast-scan -n ${ns} -o wide || true
-							POD=\$(kubectl get pod -n ${ns} -l job-name=dast-scan -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-							if [ -n "\$POD" ]; then
-								kubectl cp ${ns}/\$POD:/zap/wrk/zap-report.json reports/zap-report.json || true
-								kubectl cp ${ns}/\$POD:/zap/wrk/zap-report.html reports/zap-report.html || true
-								kubectl cp ${ns}/\$POD:/zap/wrk/zap-exit.txt reports/zap-exit.txt || true
-							fi
-							timeout 120 kubectl delete job dast-scan -n ${ns} --ignore-not-found --wait=true || true
-							# FAIL CLOSED: a broken/missing scan must never look like a pass
-							if [ ! -s reports/zap-report.json ]; then
-								echo 'DAST produced no report — failing closed'
+							kubectl wait --for=condition=complete job/dast-scan -n ${ns} --timeout=15m || {
+								kubectl get job dast-scan -n ${ns} -o wide || true
+								echo 'DAST scan did not complete in time'
 								exit 1
-							fi
-							echo "ZAP scan's own verdict: \$(cat reports/zap-exit.txt 2>/dev/null || echo 'clean (exit 0)')"
+							}
 						"""
+					}
+					sh """
+						set -euo pipefail
+						docker cp "${env.KIND_NODE}:${hostDir}/zap-report.json" reports/zap-report.json 2>/dev/null || true
+						docker cp "${env.KIND_NODE}:${hostDir}/zap-report.html" reports/zap-report.html 2>/dev/null || true
+						docker cp "${env.KIND_NODE}:${hostDir}/zap-exit.txt" reports/zap-exit.txt 2>/dev/null || true
+						docker exec "${env.KIND_NODE}" rm -rf "${hostDir}"
+						kubectl delete job dast-scan -n ${ns} --ignore-not-found --wait=true
+						# FAIL CLOSED: a broken/missing scan must never look like a pass
+						[ -s reports/zap-report.json ] || { echo 'DAST produced no report — failing closed'; exit 1; }
+						echo "ZAP scan's own verdict: \$(cat reports/zap-exit.txt 2>/dev/null || echo 'clean (exit 0)')"
+					"""
 				}
 			}
 		}
 
 		stage('Vuln Gate - incl. DAST') {
 			steps {
-				// second decision point: static findings PLUS the runtime findings from
-				// ZAP. gate.py evaluates DAST findings against the dedicated policy.dast
-				// section (stricter defaults) and reports counts.dast separately.
-				script { runGate('gate-decision-dast.json', 'gated-dast.jsonl', 'reports/security-report-dast') }
+				// second decision point: static findings PLUS the runtime findings
+				// from ZAP. gate.py evaluates DAST findings against the dedicated
+				// policy.dast section (stricter defaults) and reports counts.dast
+				// separately. The ZAP report is only expected when DAST actually ran.
+				script {
+					def expected = ['reports/trivy.sarif', 'reports/sbom.cdx.image.json']
+					if (params.RUN_DAST && params.ENVIRONMENT == 'staging') {
+						expected << 'reports/zap-report.json'
+					}
+					runGate('gate-decision-dast.json', 'gated-dast.jsonl', 'reports/security-report-dast', expected)
+				}
 			}
 		}
 
@@ -413,14 +464,17 @@ pipeline {
 						set -euo pipefail
 						kubectl rollout status deployment/notes -n ${ns} --timeout=3m
 						# ready endpoints must exist before we call the deployment healthy
-						ADRRS=\$(kubectl get endpoints notes -n ${ns} -o jsonpath='{.subsets[*].addresses[*].ip}' | wc -w | tr -d ' ')
-						echo "ready endpoints: \$ADRRS"
-						[ "\$ADRRS" -ge 1 ] || { echo 'no ready endpoints — deployment not healthy'; exit 1; }
+						# (EndpointSlices — the Endpoints .subsets field is deprecated)
+						READY=\$(kubectl get endpointslices -n ${ns} -l kubernetes.io/service-name=notes -o json | \
+							python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for i in d['items'] for e in i.get('endpoints',[]) if (e.get('conditions') or {}).get('ready')))")
+						echo "ready endpoints: \$READY"
+						[ "\$READY" -ge 1 ] || { echo 'no ready endpoints — deployment not healthy'; exit 1; }
 						# in-cluster smoke test as a Job (deploy/k8s/cd/smoke-job.yaml.tpl)
+						kubectl delete job smoke-test -n ${ns} --ignore-not-found --wait=true || true
 						kubectl apply -f ${smoke}
 						kubectl wait --for=condition=complete job/smoke-test -n ${ns} --timeout=3m
 						kubectl logs job/smoke-test -n ${ns} --tail=50 || true
-						timeout 120 kubectl delete job smoke-test -n ${ns} --ignore-not-found --wait=true || true
+						kubectl delete job smoke-test -n ${ns} --ignore-not-found --wait=true
 						# evidence for the archive
 						kubectl auth can-i --list -n ${ns} > verification-rbac.txt || true
 						kubectl get networkpolicy -n ${ns} -o json > verification-netpol.json || true
@@ -438,15 +492,15 @@ pipeline {
 				}
 			}
 			steps {
-				input message: 'Approve production deployment? The vuln gate and verification passed for staging.',
-				      ok: 'Deploy to Production',
-				      parameters: [
-						string(defaultValue: "${DOCKER_IMAGE}@${DIGEST}",
-						       description: 'Image to deploy (digest-pinned)', name: 'PROD_IMAGE'),
-					]
 				script {
+					def dastNote = params.RUN_DAST ?
+						'The vuln gate (incl. DAST) and post-deployment verification passed for staging.' :
+						'The vuln gate (static findings only — DAST was skipped via RUN_DAST=false) and post-deployment verification passed for staging.'
+					input message: "Approve production deployment? ${dastNote}",
+					      ok: 'Deploy to Production'
 					def ns = 'demo-production'
-					def deployImage = params.PROD_IMAGE ?: "${env.DOCKER_IMAGE}@${env.DIGEST}"
+					// always the SAME digest that was gated + verified — no override possible
+					def deployImage = "${env.REGISTRY}/${env.REPOSITORY}@${env.DIGEST}"
 					echo "promoting ${deployImage} to ${ns}"
 					ensureNamespace(ns, 'production')
 					deployApp(ns, 'production', deployImage, '3', params.APP_VERSION)

@@ -32,9 +32,6 @@ spec:
           ports:
             - name: http
               containerPort: 8000
-          envFrom:
-            - secretRef:
-                name: notes-secret
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true

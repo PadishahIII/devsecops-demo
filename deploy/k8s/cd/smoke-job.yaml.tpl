@@ -21,9 +21,17 @@ spec:
         job-name: smoke-test
     spec:
       restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        # alpine `nobody` — the curl image ships no dedicated user
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: smoke
-          image: curlimages/curl:8.12.1
+          # pinned by digest
+          image: curlimages/curl:8.12.1@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -35,3 +43,14 @@ spec:
               echo "smoke: search"
               curl -fsS -m 10 "http://${SVC_URL}/search?q=smoke" | grep -q "smoke"
               echo "smoke tests passed"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi

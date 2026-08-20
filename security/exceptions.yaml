@@ -6,8 +6,9 @@
 # if the code moves, the fingerprint stops matching and the finding fails
 # closed (an exception can never silently whitelist a whole rule).
 #
-# Audit trail: git history of this file + audit/exceptions-audit.jsonl written
-# by tools/gate.py on every run. Critical findings can never be excepted
+# Audit trail: git history of this file + audit/exceptions-audit.jsonl
+# (written by tools/gate.py on every run; gitignored, archived as a build
+# artifact). Critical findings can never be excepted
 # (policy.yaml: exceptions.max_severity).
 # =============================================================================
 
