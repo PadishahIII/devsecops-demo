@@ -60,16 +60,16 @@ pipeline {
     }
 
     stages {
-        stage('checkout') {
-            steps {
-                checkout scm
-            }
-        }
 	stage('cleanup') {
 		steps {
 			cleanWs() // Workspace Cleanup Plugin
 		}
 	}
+        stage('checkout') {
+            steps {
+                checkout scm
+            }
+        }
 
         stage('build & push image') {
             steps {
