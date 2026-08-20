@@ -1,174 +1,182 @@
 def pretty_json(String workspace, String input, String output) {
-	sh """
-		tmp=\$(mktemp -p "${workspace}" -t ".jq-output")
-		docker run --rm -v "${workspace}:/wd" -w /wd ghcr.io/jqlang/jq:1.8.2 . "/wd/${input}" > "\$tmp"
-		mv "\$tmp" "${workspace}/${output}"
-	"""
+    sh """
+        tmp=\$(mktemp -p "${workspace}" -t ".jq-output")
+        docker run --rm -v "${workspace}:/wd" -w /wd ghcr.io/jqlang/jq:1.8.2 . "/wd/${input}" > "\$tmp"
+        mv "\$tmp" "${workspace}/${output}"
+    """
 }
+
 pipeline {
     agent any
+
     environment {
-    	GITLEAKS_VERSION = "v8.21.2"
-  	SEMGREP_VERSION = "1.155.0"
-	SYFT_VERSION = "v1.51.0" 
-	GRYPE_VERSION = "v0.115.0" 
-	TRIVY_VERSION = "0.74.0"
+        GITLEAKS_VERSION = "v8.21.2"
+        SEMGREP_VERSION = "1.155.0"
+        SYFT_VERSION = "v1.51.0"
+        GRYPE_VERSION = "v0.115.0"
+        TRIVY_VERSION = "0.74.0"
     }
+
     options {
-    	timestamps()
-	disableConcurrentBuilds()
-	timeout(time: 30, unit: 'MINUTES')
-	buildDiscarder(logRotator(numToKeepStr: '10', daysToKeepStr: '30'))
+        timestamps()
+        disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10', daysToKeepStr: '30'))
     }
+
     stages {
-    	stage('checkout') {
-		steps {
-			checkout scm
-		}
-	}
-        stage('fmt-lint-test') {
-	    agent {
-	        docker {
-	        	image 'python:3.12.7-slim'
-			reuseNode true
-			args '-u root -v pip-cache:/root/.cache/pip'
-	        }
-	    }
-	    environment {
-	    	PIP_CACHE_DIR = '/root/.cache/pip'
-	    }
+        stage('cleanup') {
             steps {
-	    	sh 'python -m pip install -r app/requirements-dev.txt'
-		// lint issues are hard failure
-		sh 'python -m ruff check app'
-		dir('app') {
-			sh 'mkdir -p reports'
-			sh 'python -m pytest -q --junitxml=reports/pytest.xml'
-		}
+                cleanWs() // Workspace Cleanup Plugin
             }
         }
-	stage('secret-scan') {
-		steps {
-			sh 'mkdir -p reports'
-			// continue on error, only for test
-			catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-				sh """
-				docker run --rm -v "$WORKSPACE:/src" -w /src \
-					zricethezav/gitleaks:${env.GITLEAKS_VERSION} \
-					git /src \
-					-c /src/security/gitleaks.toml \
-					--redact \
-					--report-format sarif \
-					--report-path /src/reports/gitleaks.sarif
-				"""	
-				pretty_json("$WORKSPACE/reports", 'gitleaks.sarif', 'gitleaks.sarif')
-			}
-		}
-	}
-	stage('SAST - semgrep') {
-		steps {
-			// continue on error, only for test
-			catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-				sh """
-				docker run --rm -v "$WORKSPACE:/src" -w /src \
-					semgrep/semgrep:${env.SEMGREP_VERSION} \
-					semgrep scan \
-					--config p/security-audit \
-					--config /src/security/semgrep \
-					--metrics off \
-					--sarif -o /src/reports/semgrep.sarif \
-					/src
-				"""
-				pretty_json("$WORKSPACE/reports", 'semgrep.sarif', 'semgrep.sarif')
-			}
-		}
-	}
-	stage('SCA - syft+grype') {
-		steps {
-			catchError(buildResult: 'FAILURE', stageResult: 'FAILURE')  {
-				sh """
-				docker run --rm -v "$WORKSPACE:/src" -w /src \
-				anchore/syft:${env.SYFT_VERSION} scan dir:. \
-				--source-name devsecops-demo \
-				--output cyclonedx-json=/src/reports/sbom.cdx.json
-				"""
-				pretty_json("$WORKSPACE/reports", 'sbom.cdx.json', 'sbom.cdx.json')
-				sh """
-				docker run --rm -v "$WORKSPACE:/src" -v grype-db:/root/.cache/grype/db -w /src \
-				anchore/grype:${env.GRYPE_VERSION} sbom:/src/reports/sbom.cdx.json \
-				-o json --file /src/reports/grype.json
-				"""
-				pretty_json("$WORKSPACE/reports", 'grype.json', 'grype.json')
-			}
-		}
-	}
-	stage('IaC - trivy') {
-		steps {
-			catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-				sh """
-				docker run --rm -v "$WORKSPACE:/src" -v trivy-cache:/root/.cache/trivy/ -w /src \
-				aquasec/trivy:${env.TRIVY_VERSION} config \
-				--severity CRITICAL,HIGH \
-				--check-namespaces user --config-check /src/security/trivy \
-				--cache-dir /root/.cache/trivy \
-				--format sarif -o /src/reports/trivy.sarif \
-				/src
-				"""
-				pretty_json("$WORKSPACE/reports", 'trivy.sarif', 'trivy.sarif')
-			}
-		}
-	}
-	stage('gate + report') {
-		steps {
-			// normalize -> gate (the single decision point) -> curated MD report
-			// The GATE decides the workflow status: fail/warn/error are read back
-			// from gate-decision.json and mapped to FAILURE / UNSTABLE / FAILURE.
-			// We neutralize the Python exit code so the report ALWAYS renders,
-			// even when the gate blocks.
-			sh '''
-			python3 tools/normalize.py reports --out findings.jsonl --raw-dir raw
-			python3 tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml \
-			--out gate-decision.json --findings-out gated.jsonl || true
-			python3 tools/report.py gated.jsonl gate-decision.json --out reports/security-report || true
-			'''
-			// Map the gate's verdict onto the workflow status. ERROR (absent input)
-			// and FAIL (policy blocked) both fail the build; WARN -> UNSTABLE.
-			script {
-				// readJSON (Pipeline Utility Steps plugin) is NOT installed on this instance;
-				// read the file as text and parse with Groovy's built-in JsonSlurper instead.
-				def decision = readFile(file: 'gate-decision.json', encoding: 'UTF-8')
-				def parsed = new groovy.json.JsonSlurper().parseText(decision)
-				def status = parsed.status ?: 'pass'
-				echo "gate verdict: ${status}"
-				if (status == 'fail' || status == 'error') {
-					error "gate ${status.toUpperCase()} — ${parsed.error ?: parsed.counts.fail + ' blocking finding(s)'}"
-				} else if (status == 'warn') {
-					unstable 'gate WARN — non-blocking warnings present'
-				}
-			}
-		}
-	}
+
+        stage('checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('fmt-lint-test') {
+            agent {
+                docker {
+                    image 'python:3.12.7-slim'
+                    reuseNode true
+                    args '-u root -v pip-cache:/root/.cache/pip'
+                }
+            }
+
+            environment {
+                PIP_CACHE_DIR = '/root/.cache/pip'
+            }
+
+            steps {
+                sh 'python -m pip install -r app/requirements-dev.txt'
+                // lint issues are hard failure
+                sh 'python -m ruff check app'
+                dir('app') {
+                    sh 'mkdir -p reports'
+                    sh 'python -m pytest -q --junitxml=reports/pytest.xml'
+                }
+            }
+        }
+
+        stage('secret-scan') {
+            steps {
+                sh 'mkdir -p reports'
+                // catchError: scan failure fails the build, but the gate + report stage still runs
+                catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                    sh """
+                        docker run --rm -v "$WORKSPACE:/src" -w /src \
+                            zricethezav/gitleaks:${env.GITLEAKS_VERSION} \
+                            git /src \
+                            -c /src/security/gitleaks.toml \
+                            --redact \
+                            --report-format sarif \
+                            --report-path /src/reports/gitleaks.sarif
+                    """
+                    pretty_json("$WORKSPACE/reports", 'gitleaks.sarif', 'gitleaks.sarif')
+                }
+            }
+        }
+
+        stage('SAST - semgrep') {
+            steps {
+                // catchError: scan failure fails the build, but the gate + report stage still runs
+                catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                    sh """
+                        docker run --rm -v "$WORKSPACE:/src" -w /src \
+                            semgrep/semgrep:${env.SEMGREP_VERSION} \
+                            semgrep scan \
+                            --config p/security-audit \
+                            --config /src/security/semgrep \
+                            --metrics off \
+                            --sarif -o /src/reports/semgrep.sarif \
+                            /src
+                    """
+                    pretty_json("$WORKSPACE/reports", 'semgrep.sarif', 'semgrep.sarif')
+                }
+            }
+        }
+
+        stage('SCA - syft+grype') {
+            steps {
+                catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                    sh """
+                        docker run --rm -v "$WORKSPACE:/src" -w /src \
+                            anchore/syft:${env.SYFT_VERSION} scan dir:. \
+                            --source-name devsecops-demo \
+                            --output cyclonedx-json=/src/reports/sbom.cdx.json
+                    """
+                    pretty_json("$WORKSPACE/reports", 'sbom.cdx.json', 'sbom.cdx.json')
+                    sh """
+                        docker run --rm -v "$WORKSPACE:/src" -v grype-db:/root/.cache/grype/db -w /src \
+                            anchore/grype:${env.GRYPE_VERSION} sbom:/src/reports/sbom.cdx.json \
+                            -o json --file /src/reports/grype.json
+                    """
+                    pretty_json("$WORKSPACE/reports", 'grype.json', 'grype.json')
+                }
+            }
+        }
+
+        stage('IaC - trivy') {
+            steps {
+                catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                    sh """
+                        docker run --rm -v "$WORKSPACE:/src" -v trivy-cache:/root/.cache/trivy/ -w /src \
+                            aquasec/trivy:${env.TRIVY_VERSION} config \
+                            --severity CRITICAL,HIGH \
+                            --check-namespaces user --config-check /src/security/trivy \
+                            --cache-dir /root/.cache/trivy \
+                            --format sarif -o /src/reports/trivy.sarif \
+                            /src
+                    """
+                    pretty_json("$WORKSPACE/reports", 'trivy.sarif', 'trivy.sarif')
+                }
+            }
+        }
+
+        stage('gate + report') {
+            steps {
+                // normalize -> gate (the single decision point) -> curated MD report
+                // The GATE decides the workflow status: fail/warn/error are read back
+                // from gate-decision.json and mapped to FAILURE / UNSTABLE / FAILURE.
+                // We neutralize the Python exit code so the report ALWAYS renders,
+                // even when the gate blocks.
+                sh '''
+                    python3 tools/normalize.py reports --out findings.jsonl --raw-dir raw
+                    python3 tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml \
+                        --out gate-decision.json --findings-out gated.jsonl || true
+                    python3 tools/report.py gated.jsonl gate-decision.json --out reports/security-report || true
+                '''
+                // Map the gate's verdict onto the workflow status. ERROR (absent input)
+                // and FAIL (policy blocked) both fail the build; WARN -> UNSTABLE.
+                script {
+                    // readJSON (Pipeline Utility Steps plugin) is NOT installed on this instance;
+                    // read the file as text and parse with Groovy's built-in JsonSlurper instead.
+                    def decision = readFile(file: 'gate-decision.json', encoding: 'UTF-8')
+                    def parsed = new groovy.json.JsonSlurper().parseText(decision)
+                    def status = parsed.status ?: 'pass'
+                    echo "gate verdict: ${status}"
+                    if (status == 'fail' || status == 'error') {
+                        error "gate ${status.toUpperCase()} — ${parsed.error ?: parsed.counts.fail + ' blocking finding(s)'}"
+                    } else if (status == 'warn') {
+                        unstable 'gate WARN — non-blocking warnings present'
+                    }
+                }
+            }
+        }
     }
-	post {
-		always {
-			junit 'app/reports/pytest.xml' // JUnit plugin
-			archiveArtifacts artifacts: 'reports/gitleaks.sarif', allowEmptyArchive: true, fingerprint: true
 
-			archiveArtifacts artifacts: 'reports/semgrep.sarif', allowEmptyArchive: true, fingerprint: true
+    post {
+        always {
+            junit 'app/reports/pytest.xml' // JUnit plugin
+            archiveArtifacts artifacts: 'reports/gitleaks.sarif, reports/semgrep.sarif, reports/sbom.cdx.json, reports/grype.json, reports/trivy.sarif',
+                              allowEmptyArchive: true, fingerprint: true
+            archiveArtifacts artifacts: 'reports/security-report/report.md', allowEmptyArchive: true
+        }
 
-			archiveArtifacts artifacts: 'reports/sbom.cdx.json', allowEmptyArchive: true, fingerprint: true
-
-			archiveArtifacts artifacts: 'reports/grype.json', allowEmptyArchive: true, fingerprint: true
-
-			archiveArtifacts artifacts: 'reports/trivy.sarif', allowEmptyArchive: true, fingerprint: true
-
-			archiveArtifacts artifacts: 'reports/security-report/report.md', allowEmptyArchive: true
-
-		}
-		success { echo 'build OK' }
-		failure { echo 'build failed!' }
-		cleanup {
-			cleanWs() // Workspace Cleanup Plugin
-		}
-	}
+        success { echo 'build OK' }
+        failure { echo 'build failed!' }
+    }
 }

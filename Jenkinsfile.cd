@@ -42,7 +42,7 @@ pipeline {
         REGISTRY = 'docker.io'
         SYFT_VERSION = "v1.51.0"
         TRIVY_VERSION = "0.74.0"
-        COSIGN_VERSION = "sha256-3b59b946b038b65a1fdb74f7248e3171289d1b9631c69eed603a2617218448fc"
+        COSIGN_VERSION = "sha256:3b59b946b038b65a1fdb74f7248e3171289d1b9631c69eed603a2617218448fc"
         // must stay true: digest/sign/verify stages require the image to be on the registry
         PUSH_IMAGE = true
     }
@@ -55,7 +55,7 @@ pipeline {
     parameters {
         string(name: 'REPOSITORY', defaultValue: 'padishahiii/demo-web-app',
                description: 'Docker Hub repository to push to')
-        string(name: 'IMAGE_TAG', defaultValue: 'latest',
+        string(name: 'IMAGE_TAG', defaultValue: '',
                description: 'Extra image tags to push, comma-separated (default tag is <sha8>-<BUILD_NUMBER>)')
         // booleanParam(name: 'PUSH_IMAGE', defaultValue: true,
         //              description: 'Push the image to Docker Hub after building')

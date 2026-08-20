@@ -51,3 +51,10 @@
   - Left in place (user's deliberate comments): commented-out PUSH_IMAGE booleanParam, commented-out post cleanup block (cleanup is now a first stage).
   - `.venv` was missing tools/requirements.txt deps (pydantic, pyyaml) — reinstalled before verifying.
 - Reuse: when removing a pydantic field with `extra="forbid"`, grep the YAML for the key in the same commit; the model and the file are a contract pair.
+
+## 2026-08-20 — cosign image pin: sha256- (hyphen) is not a valid docker reference
+
+- Context: CD build #18 failed at the sign stage: `docker: invalid reference format` on `bitnami/cosign@sha256-3b59b946…`.
+- Memory: Docker Hub's UI displays digests with a HYPHEN (`sha256-…`); docker CLI requires the COLON form (`sha256:…`). Copy-pasting from the Hub UI breaks `docker pull/run/manifest inspect` with "invalid reference format" (client-side parse error, before any network call). Fix applied: `COSIGN_VERSION = "sha256:3b59b946…"` in Jenkinsfile.cd. Verified: `docker manifest inspect bitnami/cosign@sha256:3b59…` resolves (manifest OK); bitnami/cosign is a real repo (1.4M pulls) and the digest is a published tag.
+- Reuse: when pinning any image by digest, always write `sha256:<hex>` — verify with `docker manifest inspect <ref>` before running the pipeline.
+- Also this session: Jenkinsfile.ci beautified (4-space indent, no trailing ws/tabs, 2 misleading "continue on error" comments → accurate catchError comment, 5 fingerprinted archiveArtifacts merged into 1 call, report.md call kept separate — it has no fingerprint: true, behavior preserved). Verified token-level: all 7 sh blocks byte-identical modulo indentation; stage/catchError/pretty_json counts unchanged.
