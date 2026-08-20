@@ -40,7 +40,7 @@ pipeline {
         REGISTRY = 'docker.io'
 	SYFT_VERSION = "v1.51.0" 
 	TRIVY_VERSION = "0.74.0"
-
+	COSIGN_VERSION = "sha256-3b59b946b038b65a1fdb74f7248e3171289d1b9631c69eed603a2617218448fc"
     }
 
     options {
@@ -65,6 +65,11 @@ pipeline {
                 checkout scm
             }
         }
+	stage('cleanup') {
+		steps {
+			cleanWs() // Workspace Cleanup Plugin
+		}
+	}
 
         stage('build & push image') {
             steps {
@@ -103,8 +108,12 @@ pipeline {
                         }
                     }
 
+		    def digest = sh(script: "docker buildx imagetools inspect ${env.DOCKER_IMAGE} --format '{{json .Manifest.Digest}}'", returnStdout:true).trim()	
+
+		    env.DIGEST = digest.replaceAll(/^"|"$/, '')
+		    sh("echo ${env.DIGEST} > reports/digest.txt}")
                     env.DOCKER_IMAGE = "${env.REGISTRY}/${env.REPOSITORY}:${tags[0]}"
-                    echo "image: ${env.DOCKER_IMAGE}"
+                    echo "image: ${env.DOCKER_IMAGE}\ndigest: ${env.DIGEST}"
                 }
             }
         }
@@ -136,6 +145,49 @@ pipeline {
 			}
 		}
 	}
+	stage('Sign Image && attach SBOM attestation - cosign') {
+		steps {
+		withCredentials([
+		    file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY')
+		]) {
+		    sh '''
+			docker run -it --rm --entrypoint sh \
+			-v ./tools/sign.sh:/sign.sh \
+			-v ${COSIGN_KEY}:/keys/cosign.key \
+			-v $WORKSPACE/reports/sbom.cdx.image.json:/sbom.cdx.image.json \
+			-e COSIGN_KEY=/keys/cosign.key \
+			-e DOCKERHUB_USERNAME="${env.DOCKERHUB_CRED_USR}" \
+			-e DOCKERHUB_PASSWORD="${env.DOCKERHUB_CRED_PSW}" \
+			-e COSIGN_PASSWORD="" \
+			-e PREDICATE=/sbom.cdx.image.json \
+			-e DOCKER_IMAGE=${env.DOCKER_IMAGE} \
+			-e DIGEST=${env.DIGEST} \
+			bitnami/cosign@${env.COSIGN_VERSION} /sign.sh
+		    '''
+		}
+		}
+	}
+	stage('Verify signature and attestation - cosign') {
+		steps {
+		withCredentials([
+		    file(credentialsId: 'cosign-pub', variable: 'COSIGN_KEY_PUB')
+		]) {
+		    sh '''
+			docker run -it --rm --entrypoint sh \
+			-v ./tools/verify.sh:/verify.sh \
+			-v ${COSIGN_KEY_PUB}:/keys/cosign.pub \
+			-e COSIGN_KEY_PUB=/keys/cosign.pub \
+			-e DOCKERHUB_USERNAME="${env.DOCKERHUB_CRED_USR}" \
+			-e DOCKERHUB_PASSWORD="${env.DOCKERHUB_CRED_PSW}" \
+			-e COSIGN_PASSWORD="" \
+			-e DOCKER_IMAGE=${env.DOCKER_IMAGE} \
+			-e DIGEST=${env.DIGEST} \
+			bitnami/cosign@${env.COSIGN_VERSION} /verify.sh
+		    '''
+		}
+		}
+	}
+
 	stage('gate + report') {
 		steps {
 			// normalize -> gate (the single decision point) -> curated MD report
@@ -183,11 +235,15 @@ pipeline {
             }
 	    archiveArtifacts artifacts: 'reports/sbom.cdx.image.json', allowEmptyArchive: true, fingerprint: true
 
+	    archiveArtifacts artifacts: 'reports/digest.txt', allowEmptyArchive: true, fingerprint: true
+
+	    archiveArtifacts artifacts: 'reports/trivy.sarif', allowEmptyArchive: true, fingerprint: true
+
         }
         success { echo 'CD OK — image built and pushed' }
         failure { echo 'CD FAILED' }
-	cleanup {
-		cleanWs() // Workspace Cleanup Plugin
-	}
+	// cleanup {
+	// 	cleanWs() // Workspace Cleanup Plugin
+	// }
     }
 }

@@ -227,3 +227,5 @@ gated.jsonl
 gate-decision.json
 raw/
 reports/security-report/
+keys
+._keys
