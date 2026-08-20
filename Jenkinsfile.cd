@@ -6,12 +6,13 @@
 // Configuration:
 //   Job type:        Pipeline (not Multibranch) pointing at Jenkinsfile.cd
 //   SCM:             this repository, branch main
-//   Trigger:         MANUAL (build with parameters) — choose BRANCH / PUSH_IMAGE / IMAGE_TAG
+//   Trigger:         MANUAL (build with parameters) — choose REPOSITORY / IMAGE_TAG
 //   Credentials:     Username/Password credential, id `dockerhub`
 //                    (Docker Hub username + password / access token)
+//                    File credentials: `cosign-key` (private key) and `cosign-pub` (public key)
 //
 // The build & push logic is inlined in this file — no shared library needed
-// (requires the Docker Pipeline plugin only).
+// (requires the Docker Pipeline, Credentials Binding, and Workspace Cleanup plugins).
 //
 // Tagging:
 //   default tag  <commit-sha8>-<BUILD_NUMBER>   — always, reproducible
@@ -20,6 +21,7 @@
 
 def pretty_json(String workspace, String input, String output) {
 	sh """
+		set -e
 		tmp=\$(mktemp -p "${workspace}" -t ".jq-output")
 		docker run --rm -v "${workspace}:/wd" -w /wd ghcr.io/jqlang/jq:1.8.2 . "/wd/${input}" > "\$tmp"
 		mv "\$tmp" "${workspace}/${output}"
@@ -35,12 +37,14 @@ pipeline {
 
     environment {
         // Bound from the Username/Password credential `dockerhub` (Credentials Binding)
-        DOCKERHUB_CRED = credentials('dockerhub')   
+        DOCKERHUB_CRED = credentials('dockerhub')
         // Explicit registry — avoids ambiguity with `docker.io` in withDockerRegistry
         REGISTRY = 'docker.io'
-	SYFT_VERSION = "v1.51.0" 
-	TRIVY_VERSION = "0.74.0"
-	COSIGN_VERSION = "sha256-3b59b946b038b65a1fdb74f7248e3171289d1b9631c69eed603a2617218448fc"
+        SYFT_VERSION = "v1.51.0"
+        TRIVY_VERSION = "0.74.0"
+        COSIGN_VERSION = "sha256-3b59b946b038b65a1fdb74f7248e3171289d1b9631c69eed603a2617218448fc"
+        // must stay true: digest/sign/verify stages require the image to be on the registry
+        PUSH_IMAGE = true
     }
 
     options {
@@ -51,12 +55,10 @@ pipeline {
     parameters {
         string(name: 'REPOSITORY', defaultValue: 'padishahiii/demo-web-app',
                description: 'Docker Hub repository to push to')
-        string(name: 'BRANCH', defaultValue: 'main',
-               description: 'Git branch to build from')
         string(name: 'IMAGE_TAG', defaultValue: 'latest',
                description: 'Extra image tags to push, comma-separated (default tag is <sha8>-<BUILD_NUMBER>)')
-        booleanParam(name: 'PUSH_IMAGE', defaultValue: true,
-                     description: 'Push the image to Docker Hub after building')
+        // booleanParam(name: 'PUSH_IMAGE', defaultValue: true,
+        //              description: 'Push the image to Docker Hub after building')
     }
 
     stages {
@@ -68,6 +70,7 @@ pipeline {
         stage('checkout') {
             steps {
                 checkout scm
+		sh 'mkdir -p reports'
             }
         }
 
@@ -108,11 +111,11 @@ pipeline {
                         }
                     }
 
-		    def digest = sh(script: "docker buildx imagetools inspect ${env.DOCKER_IMAGE} --format '{{json .Manifest.Digest}}'", returnStdout:true).trim()	
+                    env.DOCKER_IMAGE = "${env.REGISTRY}/${env.REPOSITORY}:${tags[0]}"
+	    def digest = sh(script: "docker buildx imagetools inspect ${env.DOCKER_IMAGE} --format '{{json .Manifest.Digest}}'", returnStdout:true).trim()
 
 		    env.DIGEST = digest.replaceAll(/^"|"$/, '')
 		    sh("echo ${env.DIGEST} > reports/digest.txt}")
-                    env.DOCKER_IMAGE = "${env.REGISTRY}/${env.REPOSITORY}:${tags[0]}"
                     echo "image: ${env.DOCKER_IMAGE}\ndigest: ${env.DIGEST}"
                 }
             }
@@ -132,80 +135,28 @@ pipeline {
 			catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
 				sh """
 				docker run --rm -v "$WORKSPACE:/src" -v trivy-cache:/root/.cache/trivy/ -w /src \
+				-v /var/run/docker.sock:/var/run/docker.sock \
 				aquasec/trivy:${env.TRIVY_VERSION} image \
 				--severity CRITICAL,HIGH \
 				--ignore-status affected,will_not_fix,fix_deferred,end_of_life \
 				--vex security/trivy/vex.openvex.json \
-				--check-namespaces user --config-check /src/security/trivy \
 				--cache-dir /root/.cache/trivy \
 				--format sarif -o /src/reports/trivy.sarif \
-				/src
+				${env.DOCKER_IMAGE}
 				"""
 				pretty_json("$WORKSPACE/reports", 'trivy.sarif', 'trivy.sarif')
 			}
 		}
 	}
-	stage('Sign Image && attach SBOM attestation - cosign') {
-		steps {
-		withCredentials([
-		    file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY')
-		]) {
-		    sh '''
-			docker run -it --rm --entrypoint sh \
-			-v ./tools/sign.sh:/sign.sh \
-			-v ${COSIGN_KEY}:/keys/cosign.key \
-			-v $WORKSPACE/reports/sbom.cdx.image.json:/sbom.cdx.image.json \
-			-e COSIGN_KEY=/keys/cosign.key \
-			-e DOCKERHUB_USERNAME="${env.DOCKERHUB_CRED_USR}" \
-			-e DOCKERHUB_PASSWORD="${env.DOCKERHUB_CRED_PSW}" \
-			-e COSIGN_PASSWORD="" \
-			-e PREDICATE=/sbom.cdx.image.json \
-			-e DOCKER_IMAGE=${env.DOCKER_IMAGE} \
-			-e DIGEST=${env.DIGEST} \
-			bitnami/cosign@${env.COSIGN_VERSION} /sign.sh
-		    '''
-		}
-		}
-	}
-	stage('Verify signature and attestation - cosign') {
-		steps {
-		withCredentials([
-		    file(credentialsId: 'cosign-pub', variable: 'COSIGN_KEY_PUB')
-		]) {
-		    sh '''
-			docker run -it --rm --entrypoint sh \
-			-v ./tools/verify.sh:/verify.sh \
-			-v ${COSIGN_KEY_PUB}:/keys/cosign.pub \
-			-e COSIGN_KEY_PUB=/keys/cosign.pub \
-			-e DOCKERHUB_USERNAME="${env.DOCKERHUB_CRED_USR}" \
-			-e DOCKERHUB_PASSWORD="${env.DOCKERHUB_CRED_PSW}" \
-			-e COSIGN_PASSWORD="" \
-			-e DOCKER_IMAGE=${env.DOCKER_IMAGE} \
-			-e DIGEST=${env.DIGEST} \
-			bitnami/cosign@${env.COSIGN_VERSION} /verify.sh
-		    '''
-		}
-		}
-	}
-
 	stage('gate + report') {
 		steps {
-			// normalize -> gate (the single decision point) -> curated MD report
-			// The GATE decides the workflow status: fail/warn/error are read back
-			// from gate-decision.json and mapped to FAILURE / UNSTABLE / FAILURE.
-			// We neutralize the Python exit code so the report ALWAYS renders,
-			// even when the gate blocks.
 			sh '''
 			python3 tools/normalize.py reports --out findings.jsonl --raw-dir raw
 			python3 tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml \
 			--out gate-decision.json --findings-out gated.jsonl || true
 			python3 tools/report.py gated.jsonl gate-decision.json --out reports/security-report || true
 			'''
-			// Map the gate's verdict onto the workflow status. ERROR (absent input)
-			// and FAIL (policy blocked) both fail the build; WARN -> UNSTABLE.
 			script {
-				// readJSON (Pipeline Utility Steps plugin) is NOT installed on this instance;
-				// read the file as text and parse with Groovy's built-in JsonSlurper instead.
 				def decision = readFile(file: 'gate-decision.json', encoding: 'UTF-8')
 				def parsed = new groovy.json.JsonSlurper().parseText(decision)
 				def status = parsed.status ?: 'pass'
@@ -219,26 +170,63 @@ pipeline {
 		}
 	}
 
+	stage('Sign Image && attach SBOM attestation - cosign') {
+		steps {
+		withCredentials([
+		    file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY')
+		]) {
+		    sh '''
+			docker run --rm --entrypoint sh \
+			-v ./tools/sign.sh:/sign.sh \
+			-v ${COSIGN_KEY}:/keys/cosign.key \
+			-v $WORKSPACE/reports/sbom.cdx.image.json:/sbom.cdx.image.json \
+			-e COSIGN_KEY=/keys/cosign.key \
+			-e DOCKERHUB_USERNAME="${DOCKERHUB_CRED_USR}" \
+			-e DOCKERHUB_PASSWORD="${DOCKERHUB_CRED_PSW}" \
+			-e COSIGN_PASSWORD="" \
+			-e PREDICATE=/sbom.cdx.image.json \
+			-e DOCKER_IMAGE=${DOCKER_IMAGE} \
+			-e DIGEST=${DIGEST} \
+			bitnami/cosign@${COSIGN_VERSION} /sign.sh
+		    '''
+		}
+		}
+	}
+	stage('Verify signature and attestation - cosign') {
+		steps {
+		withCredentials([
+		    file(credentialsId: 'cosign-pub', variable: 'COSIGN_KEY_PUB')
+		]) {
+		    sh '''
+			docker run --rm --entrypoint sh \
+			-v ./tools/verify.sh:/verify.sh \
+			-v ${COSIGN_KEY_PUB}:/keys/cosign.pub \
+			-e COSIGN_KEY_PUB=/keys/cosign.pub \
+			-e DOCKERHUB_USERNAME="${DOCKERHUB_CRED_USR}" \
+			-e DOCKERHUB_PASSWORD="${DOCKERHUB_CRED_PSW}" \
+			-e COSIGN_PASSWORD="" \
+			-e DOCKER_IMAGE=${DOCKER_IMAGE} \
+			-e DIGEST=${DIGEST} \
+			bitnami/cosign@${COSIGN_VERSION} /verify.sh
+		    '''
+		}
+		}
+	}
 
     }
 
     post {
         always {
-            // print the resolved image name for downstream consumers, then clean up
-            // the locally built image (only meaningful when an image was pushed;
-            // PUSH_IMAGE=false keeps the image on the agent for manual use)
+            // print the resolved image name for downstream consumers, then remove
+            // the locally built image (it is already on the registry)
             script {
                 if (env.DOCKER_IMAGE) {
                     echo "image: ${env.DOCKER_IMAGE}"
-                    sh "docker rmi ${env.DOCKER_IMAGE}"
+                    sh "docker rmi -f ${env.DOCKER_IMAGE}"
                 }
             }
-	    archiveArtifacts artifacts: 'reports/sbom.cdx.image.json', allowEmptyArchive: true, fingerprint: true
-
-	    archiveArtifacts artifacts: 'reports/digest.txt', allowEmptyArchive: true, fingerprint: true
-
-	    archiveArtifacts artifacts: 'reports/trivy.sarif', allowEmptyArchive: true, fingerprint: true
-
+            archiveArtifacts artifacts: 'reports/sbom.cdx.image.json, reports/digest.txt, reports/trivy.sarif, reports/security-report/report.md',
+                              allowEmptyArchive: true, fingerprint: true
         }
         success { echo 'CD OK — image built and pushed' }
         failure { echo 'CD FAILED' }

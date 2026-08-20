@@ -61,7 +61,6 @@ class FailWhenCondition(BaseModel):
     model_config = {"extra": "forbid"}
     field: str
     value: Optional[float | bool] = None
-    op: str = ">="
     severities: list[Severity] = Field(default_factory=list)
 
 

@@ -38,7 +38,6 @@ fail_when:
     value: true
     severities: [high, critical]
   - field: epss
-    op: ">="
     value: 0.9
     severities: [high]
 

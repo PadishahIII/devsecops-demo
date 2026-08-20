@@ -24,3 +24,30 @@
   - `app/tests/__init__.py` needed so pytest inserts `app/` into `sys.path` (imports of `config`/`db`/`app`).
 - Evidence: `app/app.py`, `app/Dockerfile`, `app/tests/__init__.py`; final verification all green — pytest 6/6, ruff clean, gunicorn smoke (health/POST/notes/search/admin/headers), container run (non-root, HEALTHCHECK healthy, 0 log errors).
 - Reuse: when containerizing anything from this volume, always set modes in the Dockerfile; never rely on host permissions; always boot the app for real (not just tests) before calling it done.
+
+## 2026-08-20 — Jenkinsfile.cd review: 5 verified P0 blockers
+
+- Context: Review of Jenkinsfile.cd + tools/sign.sh, tools/verify.sh, gate/normalize/report.
+- Memory:
+  1. **`env.DOCKER_IMAGE` used before assignment** — digest line (`docker buildx imagetools inspect ${env.DOCKER_IMAGE}`) runs 3 lines before `env.DOCKER_IMAGE = ...` → empty arg → `requires 1 argument` → build dies post-push.
+  2. **`reports/` never created in CD** (CI does `mkdir -p reports` per stage) → digest.txt write, syft `--output /src/reports/...`, and `normalize.py reports` (uncaught FileNotFoundError) all fail.
+  3. **`trivy image ... /src`** — positional arg must be an image reference; `/src` → FATAL exit 2. Trivy container also lacks `/var/run/docker.sock` (syft stage has it), so it can't see local images. Custom Rego checks are k8s-scoped (`input: schema["kubernetes"]`) → `--check-namespaces/--config-check` in the image stage is CI copy-paste, never fires.
+  4. **Single-quoted `sh '''...'''` in cosign stages** — `${env.DOCKERHUB_CRED_USR}` etc. NOT Groovy-interpolated → shell gets literal → `bash: bad substitution` (verified locally). Fix: use shell env vars `$DOCKERHUB_CRED_USR` (credentials binding exports them).
+  5. **`docker run -it`** in cosign stages → `the input device is not a TTY` in Jenkins (verified).
+- Design: gate runs AFTER push+sign — a gate FAIL leaves a published AND signed image. Reorder: build(no push)→SBOM→trivy→gate→push→sign→verify. `buildx imagetools inspect` digest only works for pushed images → conditional on PUSH_IMAGE. `cosign login -p` on CLI exposes token (use `--password-stdin`). `BRANCH` param unused. `docker rmi` only removes default tag. CD doesn't archive `reports/security-report/report.md` (CI does).
+- Verified facts: trivy `will_not_fix` IS a valid `--ignore-status` value; trivy exits 0 by default even with findings (gate-as-single-decision-point is coherent); `--ignore-status affected,...` = only FIXED vulns reported.
+- Evidence: local shell tests (bad substitution, -it no-TTY, buildx no-arg); trivy.dev docs; git log c7d60e1/4159fee/a6d1c6a.
+- Reuse: pipeline was never run end-to-end — after fixing, do a full `PUSH_IMAGE=false` dry run first, then a real push.
+
+## 2026-08-20 — Jenkinsfile.cd: user fixed P0s; op field removed; docs/cosmetics fixed
+
+- Context: Follow-up to the 2026-08-20 review. User applied the P0 fixes themselves; I applied the remaining review items.
+- Memory:
+  - User's P0 fixes (verified in file): DOCKER_IMAGE assigned before digest lookup; `mkdir -p reports` in checkout; trivy now mounts docker socket + scans `${env.DOCKER_IMAGE}` (k8s-only `--check-namespaces/--config-check` dropped); cosign stages use shell env vars (`$DOCKERHUB_CRED_USR` etc.) and `docker run --rm` (no `-it`); `docker rmi -f`; `reports/security-report/report.md` archived; gate+report moved BEFORE sign/verify; `set -e` added to pretty_json; BRANCH param removed; PUSH_IMAGE became an env constant `true` (booleanParam commented out).
+  - I removed `FailWhenCondition.op` from tools/gate.py AND the `op: ">="` key from security/policy.yaml — REQUIRED pair: the pydantic model is `extra="forbid"`, so removing only one side breaks policy validation at startup. Comparison stays hard-coded `>=`. Verified: policy validates + EPSS/KEV fail_when paths still fire (synthetic e2e, gate exit 2).
+  - Docs fixed: header trigger line (REPOSITORY/IMAGE_TAG only), plugin list (Docker Pipeline + Credentials Binding + Workspace Cleanup), cosign file credentials documented, PUSH_IMAGE "must stay true" comment (digest/sign/verify need the image on the registry), post-block comment updated.
+  - Restored the `if (env.DOCKERHUB_CRED_USR && ...)` login guard the user's edit had dropped — without it the dedicated "push requested but credentials not set" error is unreachable (docker login fails first with a cryptic error).
+  - Cosmetics: trailing whitespace removed (L39/42/110/140), env-block tabs normalized to spaces, 4 archiveArtifacts calls merged into one, 3 blank lines → 1.
+  - Left in place (user's deliberate comments): commented-out PUSH_IMAGE booleanParam, commented-out post cleanup block (cleanup is now a first stage).
+  - `.venv` was missing tools/requirements.txt deps (pydantic, pyyaml) — reinstalled before verifying.
+- Reuse: when removing a pydantic field with `extra="forbid"`, grep the YAML for the key in the same commit; the model and the file are a contract pair.
