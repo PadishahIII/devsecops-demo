@@ -1,23 +1,44 @@
-// Jenkinsfile.cd — build & push the devsecops-demo Docker image to Docker Hub.
+// Jenkinsfile.cd — build, scan, sign & verify the devsecops-demo image, then
+// deploy to a kind cluster on the Jenkins node: staging → in-cluster ZAP DAST
+// → DAST-aware vuln gate → post-deployment verification → gated production.
 //
-// Companion to Jenkinsfile.ci (SAST/SCA/IaC gates). This pipeline builds the
-// image from app/Dockerfile and pushes it to Docker Hub.
+// Companion to Jenkinsfile.ci (SAST/SCA/IaC gates). THIS pipeline is the CD
+// half: it builds the image from app/Dockerfile, pushes it to Docker Hub,
+// gates it (image gate pre-sign, promotion gate post-DAST), and deploys it.
 //
 // Configuration:
-//   Job type:        Pipeline (not Multibranch) pointing at Jenkinsfile.cd
-//   SCM:             this repository, branch main
-//   Trigger:         MANUAL (build with parameters) — choose REPOSITORY / IMAGE_TAG
-//   Credentials:     Username/Password credential, id `dockerhub`
-//                    (Docker Hub username + password / access token)
-//                    File credentials: `cosign-key` (private key) and `cosign-pub` (public key)
+//   Job type:        Multibranch Pipeline pointing at Jenkinsfile.cd (branch main)
+//   Trigger:         MANUAL (build with parameters) — ENVIRONMENT / APP_VERSION /
+//                    RUN_DAST / PROMOTE_TO_PROD decide the run, see `parameters`
+//   Credentials (CREATE THESE IN JENKINS):
+//     dockerhub            Username/Password — Docker Hub user + token
+//     cosign-key           File — cosign private key
+//     cosign-pub           File — cosign public key
+//     kind-kubeconfig      File — kubeconfig of the kind cluster on the node
+//     app-secret-key       Secret text — the app's APP_SECRET_KEY
+//     admin-password-hash  Secret text — the app's ADMIN_PASSWORD_HASH
+//   Requirements:        a kind cluster on the Jenkins node (kubectl + KUBECONFIG),
+//                        Docker Hub repo (public or private — regcred is created).
 //
-// The build & push logic is inlined in this file — no shared library needed
-// (requires the Docker Pipeline, Credentials Binding, and Workspace Cleanup plugins).
+// Pipeline shape (happy path, ENVIRONMENT=staging + PROMOTE_TO_PROD=true):
+//   cleanup → checkout → init → build & push (3 tags) → SBOM → trivy →
+//   image gate → cosign sign+verify → deploy staging → ZAP DAST (in-cluster
+//   Job) → VULN GATE (static + DAST, gate-decision-dast.json) →
+//   post-deployment verification → [input] → deploy production (same digest)
 //
+// Designs borrowed from sample (see sample in repo root):
+//   * ENVIRONMENT / APP_VERSION / RUN_DAST / PROMOTE_TO_PROD parameters
+//   * deploy staging → run ZAP in-cluster → vuln gate → verification → promote
+//   * three-tag strategy: <sha8>-<BUILD_NUMBER> + latest + <APP_VERSION>
+//   * ALL k8s objects are versioned templates in deploy/k8s/cd/*.tpl — the
+//     Jenkinsfile only renders (renderManifest) and applies them, it never
+//     defines objects inline
+//   * production-grade kubectl commands (idempotent apply, rollout status,
+//     bounded waits, fail-closed DAST report check)
 // Tagging:
-//   default tag  <commit-sha8>-<BUILD_NUMBER>   — always, reproducible
-//   IMAGE_TAG    extra tag(s), comma-separated  — e.g. latest, v1.2.3
-
+//   primary   <commit-sha8>-<BUILD_NUMBER>  — always, reproducible (digest source)
+//   latest                                   — always, convenience pointer
+//   <APP_VERSION>                            — always, versioned pointer
 
 def pretty_json(String workspace, String input, String output) {
 	sh """
@@ -27,211 +48,434 @@ def pretty_json(String workspace, String input, String output) {
 		mv "\$tmp" "${workspace}/${output}"
 	"""
 }
+
+// ONE decision point for both gates: normalize raw scanner outputs into
+// findings.jsonl, gate them against security/policy.yaml (+ exceptions), render
+// the human report, then enforce the verdict (fail/error → abort, warn →
+// unstable). The promotion gate gets a distinct decision/report set so the
+// image gate's verdict stays archived even after DAST findings arrive.
+def runGate(String decisionFile, String gatedFile, String reportDir) {
+	sh """
+		python3 tools/normalize.py reports --out findings.jsonl --raw-dir raw
+		python3 tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml \
+			--out ${decisionFile} --findings-out ${gatedFile} || true
+		python3 tools/report.py ${gatedFile} ${decisionFile} --out ${reportDir} || true
+	"""
+	script {
+		def decision = readFile(file: decisionFile, encoding: 'UTF-8')
+		def parsed = new groovy.json.JsonSlurper().parseText(decision)
+		def status = parsed.status ?: 'pass'
+		echo "gate verdict: ${status} — ${parsed.counts.fail} fail / ${parsed.counts.warn} warn / ${parsed.counts.pass} pass"
+		if (parsed.counts.dast) {
+			echo "DAST verdict: ${parsed.counts.dast.fail} fail / ${parsed.counts.dast.warn} warn / ${parsed.counts.dast.pass} pass (tracked separately)"
+		}
+		if (status == 'fail' || status == 'error') {
+			error "gate ${status.toUpperCase()} — ${parsed.error ?: parsed.counts.fail + ' blocking finding(s)'}"
+		} else if (status == 'warn') {
+			unstable 'gate WARN — non-blocking warnings present'
+		}
+	}
+}
+
+// Render a deploy/k8s/cd/*.tpl manifest with a variable map. Plain string
+// replacement — no envsubst dependency on the agent. Rendered output goes to
+// rendered/<name> in the workspace (never committed).
+def renderManifest(String name, Map vars) {
+	def tpl = readFile(file: "deploy/k8s/cd/${name}")
+	def out = tpl
+	vars.each { k, v -> out = out.replace("\${${k}}", v) }
+	def rendered = "rendered/${name.replaceAll(/\\.tpl\$/, '')}"
+	writeFile(file: rendered, text: out)
+	return rendered
+}
+
+// base64 of an environment variable's value (credentials binding exports these
+// to sh subprocesses) — used to fill the secret templates without the value
+// ever appearing in the Jenkinsfile itself.
+def b64FromEnv(String envName) {
+	return sh(script: "printf %s \"\$${envName}\" | base64 -w0", returnStdout: true).trim()
+}
+
+// Idempotent bootstrap of a deploy namespace on the kind cluster. ALL objects
+// are versioned templates in deploy/k8s/cd/ (namespace, Docker Hub pull
+// secret, app runtime secrets) — dynamic values are injected at render time.
+def ensureNamespace(String ns, String envName) {
+	def dockerCfgJsonB64 = sh(script: '''
+		python3 -c "import base64,json,os; auth=base64.b64encode((os.environ['DOCKERHUB_CRED_USR']+':'+os.environ['DOCKERHUB_CRED_PSW']).encode()).decode(); cfg={'auths':{os.environ['REGISTRY']:{'username':os.environ['DOCKERHUB_CRED_USR'],'password':os.environ['DOCKERHUB_CRED_PSW'],'auth':auth}}}; print(base64.b64encode(json.dumps(cfg).encode()).decode())"
+	''', returnStdout: true).trim()
+	def objects = [
+		renderManifest('namespace.yaml.tpl', [NS: ns, ENV: envName]),
+		renderManifest('regcred.yaml.tpl', [NS: ns, DOCKERCONFIGJSON_B64: dockerCfgJsonB64]),
+		renderManifest('notes-secret.yaml.tpl', [
+			NS: ns,
+			APP_SECRET_KEY_B64: b64FromEnv('APP_SECRET_KEY'),
+			ADMIN_PASSWORD_HASH_B64: b64FromEnv('ADMIN_PASSWORD_HASH'),
+		]),
+	]
+	sh "kubectl apply -f " + objects.join(" -f ")
+}
+
+// Render + apply the app manifests (deployment + service) and wait for rollout.
+def deployApp(String ns, String envName, String image, String replicas, String appVersion) {
+	def dep = renderManifest('deployment.yaml.tpl', [
+		NS: ns, ENV: envName, APP_VERSION: appVersion,
+		IMAGE: image, BUILD_NUMBER: env.BUILD_NUMBER, REPLICAS: replicas,
+	])
+	def svc = renderManifest('service.yaml.tpl', [NS: ns, ENV: envName])
+	sh """
+		set -euo pipefail
+		kubectl apply -f ${dep}
+		kubectl apply -f ${svc}
+		kubectl rollout status deployment/notes -n ${ns} --timeout=5m
+		kubectl get pods -n ${ns} -o wide
+	"""
+}
+
 properties([
-    buildDiscarder(logRotator(numToKeepStr: '10', daysToKeepStr: '30')),
-    disableConcurrentBuilds(),
+	buildDiscarder(logRotator(numToKeepStr: '10', daysToKeepStr: '30')),
+	disableConcurrentBuilds(),
 ])
 
 pipeline {
-    agent any
+	agent any
 
-    environment {
-        // Bound from the Username/Password credential `dockerhub` (Credentials Binding)
-        DOCKERHUB_CRED = credentials('dockerhub')
-        // Explicit registry — avoids ambiguity with `docker.io` in withDockerRegistry
-        REGISTRY = 'docker.io'
-        SYFT_VERSION = "v1.51.0"
-        TRIVY_VERSION = "0.74.0"
-        COSIGN_VERSION = "sha256:3b59b946b038b65a1fdb74f7248e3171289d1b9631c69eed603a2617218448fc"
-        // must stay true: digest/sign/verify stages require the image to be on the registry
-        PUSH_IMAGE = true
-    }
-
-    options {
-        timestamps()
-        timeout(time: 20, unit: 'MINUTES')
-    }
-
-    parameters {
-        string(name: 'REPOSITORY', defaultValue: 'padishahiii/demo-web-app',
-               description: 'Docker Hub repository to push to')
-        string(name: 'IMAGE_TAG', defaultValue: '',
-               description: 'Extra image tags to push, comma-separated (default tag is <sha8>-<BUILD_NUMBER>)')
-        // booleanParam(name: 'PUSH_IMAGE', defaultValue: true,
-        //              description: 'Push the image to Docker Hub after building')
-    }
-
-    stages {
-	stage('cleanup') {
-		steps {
-			cleanWs() // Workspace Cleanup Plugin
-		}
+	environment {
+		// Bound from the Username/Password credential `dockerhub` (Credentials Binding)
+		DOCKERHUB_CRED = credentials('dockerhub')
+		// Explicit registry — avoids ambiguity with `docker.io` in withDockerRegistry
+		REGISTRY = 'docker.io'
+		SYFT_VERSION = "v1.51.0"
+		TRIVY_VERSION = "0.74.0"
+		COSIGN_VERSION = "sha256:3b59b946b038b65a1fdb74f7248e3171289d1b9631c69eed603a2617218448fc"
+		// must stay true: digest/sign/verify stages require the image to be on the registry
+		PUSH_IMAGE = true
+		// CD: kind cluster on the Jenkins node + app runtime secrets
+		KUBECONFIG = credentials('kind-kubeconfig')           // File credential
+		APP_SECRET_KEY = credentials('app-secret-key')        // Secret text
+		ADMIN_PASSWORD_HASH = credentials('admin-password-hash') // Secret text
 	}
-        stage('checkout') {
-            steps {
-                checkout scm
-		sh 'mkdir -p reports'
-            }
-        }
 
-        stage('build & push image') {
-            steps {
-                // resolve the extra tags from the IMAGE_TAG parameter
-                script {
-                    def extra = env.IMAGE_TAG ? env.IMAGE_TAG.split(',').collect { it.trim() }.findAll { it } : []
-                    echo "extra tags: ${extra}"
-
-                    // default tag: <commit-sha8>-<BUILD_NUMBER> — always reproducible
-                    def commit = sh(script: 'git rev-parse --short=8 HEAD', returnStdout: true).trim()
-                    def buildNum = env.BUILD_NUMBER ?: '0'
-                    def tags = ["${commit}-${buildNum}"] + extra
-                    echo "tags: ${tags}"
-
-                    docker.withRegistry("https://${env.REGISTRY}") {
-                        // login if credentials are bound; also covers private base-image pulls
-                        if (env.DOCKERHUB_CRED_USR && env.DOCKERHUB_CRED_PSW) {
-                            sh """
-                                set -e
-                                echo "\$DOCKERHUB_CRED_PSW" | docker login ${env.REGISTRY} --username "\$DOCKERHUB_CRED_USR" --password-stdin
-                            """
-                        }
-
-                        docker.build("${env.REPOSITORY}:${tags[0]}", "--file app/Dockerfile app")
-
-                        if (env.PUSH_IMAGE.toBoolean()) {
-                            if (!env.DOCKERHUB_CRED_USR || !env.DOCKERHUB_CRED_PSW) {
-                                error 'push requested but DOCKERHUB_CRED_USR/DOCKERHUB_CRED_PSW not set — bind a Username/Password credential (id `dockerhub`) in the pipeline'
-                            }
-                            // push the default tag, then re-tag + push each extra tag
-                            docker.image("${env.REPOSITORY}:${tags[0]}").push()
-                            for (tag in tags.tail()) {
-                                sh "docker tag ${env.REPOSITORY}:${tags[0]} ${env.REGISTRY}/${env.REPOSITORY}:${tag}"
-                                docker.image("${env.REGISTRY}/${env.REPOSITORY}:${tag}").push()
-                            }
-                        }
-                    }
-
-                    env.DOCKER_IMAGE = "${env.REGISTRY}/${env.REPOSITORY}:${tags[0]}"
-	    def digest = sh(script: "docker buildx imagetools inspect ${env.DOCKER_IMAGE} --format '{{json .Manifest.Digest}}'", returnStdout:true).trim()
-
-		    env.DIGEST = digest.replaceAll(/^"|"$/, '')
-		    sh("echo ${env.DIGEST} > reports/digest.txt}")
-                    echo "image: ${env.DOCKER_IMAGE}\ndigest: ${env.DIGEST}"
-                }
-            }
-        }
-	stage('SBOM - syft') {
-		steps {
-			sh """
-			docker run --rm -v "$WORKSPACE:/src" -v /var/run/docker.sock:/var/run/docker.sock -w /src \
-			anchore/syft:${env.SYFT_VERSION} scan "${env.DOCKER_IMAGE}" \
-			--output cyclonedx-json=/src/reports/sbom.cdx.image.json
-			"""
-			pretty_json("$WORKSPACE/reports", 'sbom.cdx.image.json', 'sbom.cdx.image.json')
-		}
+	options {
+		timestamps()
+		timeout(time: 45, unit: 'MINUTES')
 	}
-	stage('Image Scan - trivy') {
-		steps {
-			catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-				sh """
-				docker run --rm -v "$WORKSPACE:/src" -v trivy-cache:/root/.cache/trivy/ -w /src \
-				-v /var/run/docker.sock:/var/run/docker.sock \
-				aquasec/trivy:${env.TRIVY_VERSION} image \
-				--severity CRITICAL,HIGH \
-				--ignore-status affected,will_not_fix,fix_deferred,end_of_life \
-				--vex security/trivy/vex.openvex.json \
-				--cache-dir /root/.cache/trivy \
-				--format sarif -o /src/reports/trivy.sarif \
-				${env.DOCKER_IMAGE}
-				"""
-				pretty_json("$WORKSPACE/reports", 'trivy.sarif', 'trivy.sarif')
+
+	parameters {
+		string(name: 'REPOSITORY', defaultValue: 'padishahiii/demo-web-app',
+		       description: 'Docker Hub repository to push to')
+		choice(name: 'ENVIRONMENT',
+		       choices: ['staging', 'production'],
+		       description: 'Primary deploy target. production requires PROMOTE_TO_PROD=true (hotfix path — skips staging)')
+		string(name: 'APP_VERSION', defaultValue: '1.0.0',
+		       description: 'Application version — also used as an immutable image tag (valid docker tag required)')
+		booleanParam(name: 'RUN_DAST', defaultValue: true,
+		             description: 'Run the in-cluster ZAP baseline scan after deploy; results feed the promotion gate')
+		booleanParam(name: 'PROMOTE_TO_PROD', defaultValue: false,
+		             description: 'Promote the SAME digest to production after the vuln gate + verification pass')
+	}
+
+	stages {
+		stage('cleanup') {
+			steps {
+				cleanWs() // Workspace Cleanup Plugin
 			}
 		}
-	}
-	stage('gate + report') {
-		steps {
-			sh '''
-			python3 tools/normalize.py reports --out findings.jsonl --raw-dir raw
-			python3 tools/gate.py findings.jsonl security/policy.yaml security/exceptions.yaml \
-			--out gate-decision.json --findings-out gated.jsonl || true
-			python3 tools/report.py gated.jsonl gate-decision.json --out reports/security-report || true
-			'''
-			script {
-				def decision = readFile(file: 'gate-decision.json', encoding: 'UTF-8')
-				def parsed = new groovy.json.JsonSlurper().parseText(decision)
-				def status = parsed.status ?: 'pass'
-				echo "gate verdict: ${status}"
-				if (status == 'fail' || status == 'error') {
-					error "gate ${status.toUpperCase()} — ${parsed.error ?: parsed.counts.fail + ' blocking finding(s)'}"
-				} else if (status == 'warn') {
-					unstable 'gate WARN — non-blocking warnings present'
+		stage('checkout') {
+			steps {
+				checkout scm
+				sh 'mkdir -p reports'
+			}
+		}
+		stage('Initialize') {
+			steps {
+				script {
+					if (params.ENVIRONMENT == 'production' && !params.PROMOTE_TO_PROD) {
+						error 'production deployment requires PROMOTE_TO_PROD=true'
+					}
+					if (!(params.APP_VERSION ==~ /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/)) {
+						error "APP_VERSION '${params.APP_VERSION}' is not a valid Docker tag"
+					}
+					echo "target: ${params.ENVIRONMENT} | version: ${params.APP_VERSION} | DAST: ${params.RUN_DAST} | promote: ${params.PROMOTE_TO_PROD}"
+				}
+			}
+		}
+
+		stage('build & push image') {
+			steps {
+				script {
+					def appVer = params.APP_VERSION.trim()
+					def commit = sh(script: 'git rev-parse --short=8 HEAD', returnStdout: true).trim()
+					def buildNum = env.BUILD_NUMBER ?: '0'
+					// Tag strategy — THREE tags are always emitted:
+					//   1. <sha8>-<BUILD_NUMBER>  unique + reproducible (primary; the
+					//      digest looked up from this tag is what gets deployed)
+					//   2. latest                 convenience pointer
+					//   3. <APP_VERSION>          versioned pointer from the parameters
+					// The old scheme (default tag + free-form IMAGE_TAG parameter) is
+					// gone — APP_VERSION is now a first-class tag. Duplicates (e.g.
+					// APP_VERSION=latest) are deduped.
+					def tags = ["${commit}-${buildNum}", "latest", appVer].unique()
+					echo "tags: ${tags}"
+
+					docker.withRegistry("https://${env.REGISTRY}") {
+						// login if credentials are bound; also covers private base-image pulls
+						if (env.DOCKERHUB_CRED_USR && env.DOCKERHUB_CRED_PSW) {
+							sh """
+								set -e
+								echo "\$DOCKERHUB_CRED_PSW" | docker login ${env.REGISTRY} --username "\$DOCKERHUB_CRED_USR" --password-stdin
+							"""
+						}
+
+						docker.build("${env.REPOSITORY}:${tags[0]}", "--file app/Dockerfile app")
+
+						if (env.PUSH_IMAGE.toBoolean()) {
+							if (!env.DOCKERHUB_CRED_USR || !env.DOCKERHUB_CRED_PSW) {
+								error 'push requested but DOCKERHUB_CRED_USR/DOCKERHUB_CRED_PSW not set — bind a Username/Password credential (id `dockerhub`) in the pipeline'
+							}
+							// push the primary tag, then re-tag + push each extra tag
+							docker.image("${env.REPOSITORY}:${tags[0]}").push()
+							for (tag in tags.tail()) {
+								sh "docker tag ${env.REPOSITORY}:${tags[0]} ${env.REGISTRY}/${env.REPOSITORY}:${tag}"
+								docker.image("${env.REGISTRY}/${env.REPOSITORY}:${tag}").push()
+							}
+						}
+					}
+
+					env.DOCKER_IMAGE = "${env.REGISTRY}/${env.REPOSITORY}:${tags[0]}"
+					def digest = sh(script: "docker buildx imagetools inspect ${env.DOCKER_IMAGE} --format '{{json .Manifest.Digest}}'", returnStdout: true).trim()
+
+					env.DIGEST = digest.replaceAll(/^"|"$/, '')
+					sh "echo ${env.DIGEST} > reports/digest.txt"
+					echo "image: ${env.DOCKER_IMAGE}\ndigest: ${env.DIGEST}"
+				}
+			}
+		}
+
+		stage('SBOM - syft') {
+			steps {
+				sh """
+					docker run --rm -v "$WORKSPACE:/src" -v /var/run/docker.sock:/var/run/docker.sock -w /src \
+					anchore/syft:${env.SYFT_VERSION} scan "${env.DOCKER_IMAGE}" \
+					--output cyclonedx-json=/src/reports/sbom.cdx.image.json
+				"""
+				pretty_json("$WORKSPACE/reports", 'sbom.cdx.image.json', 'sbom.cdx.image.json')
+			}
+		}
+
+		stage('Image Scan - trivy') {
+			steps {
+				catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+					sh """
+						docker run --rm -v "$WORKSPACE:/src" -v trivy-cache:/root/.cache/trivy/ -w /src \
+						-v /var/run/docker.sock:/var/run/docker.sock \
+						aquasec/trivy:${env.TRIVY_VERSION} image \
+						--severity CRITICAL,HIGH \
+						--ignore-status affected,will_not_fix,fix_deferred,end_of_life \
+						--vex security/trivy/vex.openvex.json \
+						--cache-dir /root/.cache/trivy \
+						--format sarif -o /src/reports/trivy.sarif \
+						${env.DOCKER_IMAGE}
+					"""
+					pretty_json("$WORKSPACE/reports", 'trivy.sarif', 'trivy.sarif')
+				}
+			}
+		}
+
+		stage('gate + report') {
+			steps {
+				script { runGate('gate-decision.json', 'gated.jsonl', 'reports/security-report') }
+			}
+		}
+
+		stage('Sign Image && attach SBOM attestation - cosign') {
+			steps {
+				withCredentials([
+					file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY')
+				]) {
+					sh '''
+						docker run --rm --entrypoint sh \
+						-v ./tools/sign.sh:/sign.sh \
+						-v ${COSIGN_KEY}:/keys/cosign.key \
+						-v $WORKSPACE/reports/sbom.cdx.image.json:/sbom.cdx.image.json \
+						-e COSIGN_KEY=/keys/cosign.key \
+						-e DOCKERHUB_USERNAME="${DOCKERHUB_CRED_USR}" \
+						-e DOCKERHUB_PASSWORD="${DOCKERHUB_CRED_PSW}" \
+						-e COSIGN_PASSWORD="" \
+						-e PREDICATE=/sbom.cdx.image.json \
+						-e DOCKER_IMAGE=${DOCKER_IMAGE} \
+						-e DIGEST=${DIGEST} \
+						bitnami/cosign@${COSIGN_VERSION} /sign.sh
+					'''
+				}
+			}
+		}
+
+		stage('Verify signature and attestation - cosign') {
+			steps {
+				withCredentials([
+					file(credentialsId: 'cosign-pub', variable: 'COSIGN_KEY_PUB')
+				]) {
+					sh '''
+						docker run --rm --entrypoint sh \
+						-v ./tools/verify.sh:/verify.sh \
+						-v ${COSIGN_KEY_PUB}:/keys/cosign.pub \
+						-e COSIGN_KEY_PUB=/keys/cosign.pub \
+						-e DOCKERHUB_USERNAME="${DOCKERHUB_CRED_USR}" \
+						-e DOCKERHUB_PASSWORD="${DOCKERHUB_CRED_PSW}" \
+						-e COSIGN_PASSWORD="" \
+						-e DOCKER_IMAGE=${DOCKER_IMAGE} \
+						-e DIGEST=${DIGEST} \
+						bitnami/cosign@${COSIGN_VERSION} /verify.sh
+					'''
+				}
+			}
+		}
+
+		// =================== CD HALF: DEPLOY → DAST → GATE → VERIFY → PROMOTE ===================
+
+		stage('Deploy') {
+			// staging is the default target; ENVIRONMENT=production (with
+			// PROMOTE_TO_PROD) is the hotfix path and deploys straight to prod.
+			when { expression { params.ENVIRONMENT == 'staging' || params.PROMOTE_TO_PROD } }
+			steps {
+				script {
+					def ns = "demo-${params.ENVIRONMENT}"
+					def replicas = (params.ENVIRONMENT == 'production') ? '3' : '1'
+					echo "deploying ${env.DOCKER_IMAGE}@${env.DIGEST} to ${ns} (${replicas} replica(s))"
+					ensureNamespace(ns, params.ENVIRONMENT)
+					def deployImage = "${env.REGISTRY}/${env.REPOSITORY}@${env.DIGEST}" // build once, promote the same digest
+					deployApp(ns, params.ENVIRONMENT, deployImage, replicas, params.APP_VERSION)
+				}
+			}
+		}
+
+		stage('DAST - ZAP in-cluster') {
+			when { expression { params.RUN_DAST } }
+			steps {
+				script {
+					def ns = "demo-${params.ENVIRONMENT}"
+					def dastUrl = "http://notes.${ns}.svc.cluster.local:80"
+					echo "scanning ${dastUrl} with in-cluster ZAP baseline"
+					def job = renderManifest('dast-job.yaml.tpl', [
+						NS: ns, ENV: params.ENVIRONMENT, DAST_URL: dastUrl, BUILD_NUMBER: env.BUILD_NUMBER,
+					])
+						sh """
+							set -euo pipefail
+							kubectl apply -f ${job}
+							# bounded wait for a terminal state (Complete OR Failed); the GATE decides,
+							# never the scanner's own exit code. 60 x 15s = 15 min ceiling.
+							deadline=\$((SECONDS + 900))
+							while [ "\$SECONDS" -lt "\$deadline" ]; do
+								failed=\$(kubectl get job dast-scan -n ${ns} -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || true)
+								succeeded=\$(kubectl get job dast-scan -n ${ns} -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
+								if [ "\$failed" = "True" ] || [ "\$succeeded" = "1" ]; then
+									break
+								fi
+								sleep 15
+							done
+							kubectl get job dast-scan -n ${ns} -o wide || true
+							POD=\$(kubectl get pod -n ${ns} -l job-name=dast-scan -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+							if [ -n "\$POD" ]; then
+								kubectl cp ${ns}/\$POD:/zap/wrk/zap-report.json reports/zap-report.json || true
+								kubectl cp ${ns}/\$POD:/zap/wrk/zap-report.html reports/zap-report.html || true
+								kubectl cp ${ns}/\$POD:/zap/wrk/zap-exit.txt reports/zap-exit.txt || true
+							fi
+							timeout 120 kubectl delete job dast-scan -n ${ns} --ignore-not-found --wait=true || true
+							# FAIL CLOSED: a broken/missing scan must never look like a pass
+							if [ ! -s reports/zap-report.json ]; then
+								echo 'DAST produced no report — failing closed'
+								exit 1
+							fi
+							echo "ZAP scan's own verdict: \$(cat reports/zap-exit.txt 2>/dev/null || echo 'clean (exit 0)')"
+						"""
+				}
+			}
+		}
+
+		stage('Vuln Gate - incl. DAST') {
+			steps {
+				// second decision point: static findings PLUS the runtime findings from
+				// ZAP. gate.py evaluates DAST findings against the dedicated policy.dast
+				// section (stricter defaults) and reports counts.dast separately.
+				script { runGate('gate-decision-dast.json', 'gated-dast.jsonl', 'reports/security-report-dast') }
+			}
+		}
+
+		stage('Post-Deployment Verification') {
+			steps {
+				script {
+					def ns = "demo-${params.ENVIRONMENT}"
+					def smoke = renderManifest('smoke-job.yaml.tpl', [
+						NS: ns, ENV: params.ENVIRONMENT,
+						SVC_URL: "notes.${ns}.svc.cluster.local:80", BUILD_NUMBER: env.BUILD_NUMBER,
+					])
+					sh """
+						set -euo pipefail
+						kubectl rollout status deployment/notes -n ${ns} --timeout=3m
+						# ready endpoints must exist before we call the deployment healthy
+						ADRRS=\$(kubectl get endpoints notes -n ${ns} -o jsonpath='{.subsets[*].addresses[*].ip}' | wc -w | tr -d ' ')
+						echo "ready endpoints: \$ADRRS"
+						[ "\$ADRRS" -ge 1 ] || { echo 'no ready endpoints — deployment not healthy'; exit 1; }
+						# in-cluster smoke test as a Job (deploy/k8s/cd/smoke-job.yaml.tpl)
+						kubectl apply -f ${smoke}
+						kubectl wait --for=condition=complete job/smoke-test -n ${ns} --timeout=3m
+						kubectl logs job/smoke-test -n ${ns} --tail=50 || true
+						timeout 120 kubectl delete job smoke-test -n ${ns} --ignore-not-found --wait=true || true
+						# evidence for the archive
+						kubectl auth can-i --list -n ${ns} > verification-rbac.txt || true
+						kubectl get networkpolicy -n ${ns} -o json > verification-netpol.json || true
+						kubectl get events -n ${ns} --sort-by=.lastTimestamp | tail -25 > verification-events.txt || true
+					"""
+				}
+			}
+		}
+
+		stage('Production Deployment') {
+			when {
+				allOf {
+					expression { params.ENVIRONMENT == 'staging' }
+					expression { params.PROMOTE_TO_PROD }
+				}
+			}
+			steps {
+				input message: 'Approve production deployment? The vuln gate and verification passed for staging.',
+				      ok: 'Deploy to Production',
+				      parameters: [
+						string(defaultValue: "${DOCKER_IMAGE}@${DIGEST}",
+						       description: 'Image to deploy (digest-pinned)', name: 'PROD_IMAGE'),
+					]
+				script {
+					def ns = 'demo-production'
+					def deployImage = params.PROD_IMAGE ?: "${env.DOCKER_IMAGE}@${env.DIGEST}"
+					echo "promoting ${deployImage} to ${ns}"
+					ensureNamespace(ns, 'production')
+					deployApp(ns, 'production', deployImage, '3', params.APP_VERSION)
 				}
 			}
 		}
 	}
 
-	stage('Sign Image && attach SBOM attestation - cosign') {
-		steps {
-		withCredentials([
-		    file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY')
-		]) {
-		    sh '''
-			docker run --rm --entrypoint sh \
-			-v ./tools/sign.sh:/sign.sh \
-			-v ${COSIGN_KEY}:/keys/cosign.key \
-			-v $WORKSPACE/reports/sbom.cdx.image.json:/sbom.cdx.image.json \
-			-e COSIGN_KEY=/keys/cosign.key \
-			-e DOCKERHUB_USERNAME="${DOCKERHUB_CRED_USR}" \
-			-e DOCKERHUB_PASSWORD="${DOCKERHUB_CRED_PSW}" \
-			-e COSIGN_PASSWORD="" \
-			-e PREDICATE=/sbom.cdx.image.json \
-			-e DOCKER_IMAGE=${DOCKER_IMAGE} \
-			-e DIGEST=${DIGEST} \
-			bitnami/cosign@${COSIGN_VERSION} /sign.sh
-		    '''
+	post {
+		always {
+			// print the resolved image name for downstream consumers, then remove
+			// the locally built image (it is already on the registry)
+			script {
+				if (env.DOCKER_IMAGE) {
+					echo "image: ${env.DOCKER_IMAGE}"
+					sh "docker rmi -f ${env.DOCKER_IMAGE} || true"
+				}
+			}
+			archiveArtifacts artifacts: '''
+				reports/sbom.cdx.image.json, reports/digest.txt, reports/trivy.sarif,
+				reports/security-report/report.md, gate-decision.json, gated.jsonl,
+				reports/zap-report.json, reports/zap-report.html, reports/zap-exit.txt,
+				gate-decision-dast.json, gated-dast.jsonl, reports/security-report-dast/report.md,
+				verification-rbac.txt, verification-netpol.json, verification-events.txt,
+				audit/exceptions-audit.jsonl
+			'''.replaceAll(/\s+/, ' ').trim(),
+			  allowEmptyArchive: true, fingerprint: true
 		}
-		}
+		success { echo 'CD OK — image built, scanned, gated, deployed and (PROMOTE_TO_PROD) promoted' }
+		failure { echo 'CD FAILED' }
 	}
-	stage('Verify signature and attestation - cosign') {
-		steps {
-		withCredentials([
-		    file(credentialsId: 'cosign-pub', variable: 'COSIGN_KEY_PUB')
-		]) {
-		    sh '''
-			docker run --rm --entrypoint sh \
-			-v ./tools/verify.sh:/verify.sh \
-			-v ${COSIGN_KEY_PUB}:/keys/cosign.pub \
-			-e COSIGN_KEY_PUB=/keys/cosign.pub \
-			-e DOCKERHUB_USERNAME="${DOCKERHUB_CRED_USR}" \
-			-e DOCKERHUB_PASSWORD="${DOCKERHUB_CRED_PSW}" \
-			-e COSIGN_PASSWORD="" \
-			-e DOCKER_IMAGE=${DOCKER_IMAGE} \
-			-e DIGEST=${DIGEST} \
-			bitnami/cosign@${COSIGN_VERSION} /verify.sh
-		    '''
-		}
-		}
-	}
-
-    }
-
-    post {
-        always {
-            // print the resolved image name for downstream consumers, then remove
-            // the locally built image (it is already on the registry)
-            script {
-                if (env.DOCKER_IMAGE) {
-                    echo "image: ${env.DOCKER_IMAGE}"
-                    sh "docker rmi -f ${env.DOCKER_IMAGE}"
-                }
-            }
-            archiveArtifacts artifacts: 'reports/sbom.cdx.image.json, reports/digest.txt, reports/trivy.sarif, reports/security-report/report.md',
-                              allowEmptyArchive: true, fingerprint: true
-        }
-        success { echo 'CD OK — image built and pushed' }
-        failure { echo 'CD FAILED' }
-	// cleanup {
-	// 	cleanWs() // Workspace Cleanup Plugin
-	// }
-    }
 }

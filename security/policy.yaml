@@ -7,6 +7,9 @@
 #   3. fail_tools          (categorical tools, e.g. secret leaks)
 #   4. fail_when           (KEV / EPSS overrides)
 #   5. severity_defaults   (baseline severity → action mapping)
+#
+# DAST findings (tool `zap`) are evaluated against the dedicated `dast:`
+# section below instead of the general policy — see that section for why.
 # =============================================================================
 
 severity_defaults:
@@ -49,3 +52,35 @@ exceptions:
 licenses:
   fail: []
   warn: ["AGPL-3.0", "LGPL-3.0", "GPL-3.0"]
+
+# ==============================================================
+# DAST policy — findings from dynamic scanners (tool: zap) are
+# evaluated against THIS section instead of the general policy.
+#
+# A finding on a live, externally-reachable endpoint is worse than
+# the same rule in a static scan:
+#   * high already FAILS by default (general policy only warns) —
+#     blocks the promotion gate
+#   * medium WARNS instead of passing — build marked unstable
+#   * runtime-exploitable classes (SQLi / XSS / RCE / path
+#     traversal / SSRF) fail outright regardless of vendor rating
+#
+# Precedence is identical to the general policy (severity < fail_when
+# < fail_tools < classes < exceptions); only the baseline is stricter.
+# ==============================================================
+dast:
+  severity_defaults:
+    critical: fail
+    high: fail
+    medium: warn
+    low: pass
+    informational: pass
+    unknown: warn
+  fail_rule_classes:
+    - "sql.*injection|sqli"
+    - "cross.site|xss"
+    - "remote.code.execution|rce|command.injection|os.command"
+    - "path.traversal"
+    - "ssrf|server.side.request.forgery"
+  fail_tools: []
+  # fail_when: []   # KEV/EPSS metadata only exists on static findings; leave empty
