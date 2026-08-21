@@ -36,8 +36,8 @@
 //   * ENVIRONMENT / APP_VERSION / RUN_DAST / PROMOTE_TO_PROD parameters
 //   * deploy staging → run ZAP in-cluster → vuln gate → verification → promote
 //   * three-tag strategy: <sha8>-<BUILD_NUMBER> + latest + <APP_VERSION>
-//   * ALL k8s objects are versioned templates in deploy/k8s/cd/*.tpl — the
-//     Jenkinsfile only renders (renderManifest) and applies them, it never
+//   * ALL k8s objects are versioned YAML in deploy/k8s/cd/*.yaml — the
+//     Jenkinsfile only renders (renderManifest via envsubst) and applies them, it never
 //     defines objects inline
 //   * production-grade kubectl commands (idempotent apply, rollout status,
 //     bounded waits, fail-closed DAST report check)
@@ -96,15 +96,34 @@ def runGate(String decisionFile, String gatedFile, String reportDir, List<String
 	}
 }
 
-// Render a deploy/k8s/cd/*.tpl manifest with a variable map. Plain string
-// replacement — no envsubst dependency on the agent. Rendered output goes to
-// rendered/<name> in the workspace (never committed).
+// Render a deploy/k8s/cd/*.yaml manifest via envsubst. Each var is exported to
+// the environment and envsubst substitutes ONLY the listed ${VARS} (scoped form),
+// so any other $ in the YAML — e.g. shell vars like $? or $(date) inside container
+// commands — is left untouched. Fails closed on empty values or a surviving
+// ${placeholder} (scope-list drift). Output goes to rendered/<name> (never
+// committed). Requires envsubst (gettext) on the agent.
 def renderManifest(String name, Map vars) {
-	def tpl = readFile(file: "deploy/k8s/cd/${name}")
-	def out = tpl
-	vars.each { k, v -> out = out.replace("\${${k}}", v) }
-	def rendered = "rendered/${name.replaceAll(/\\.tpl\$/, '')}"
-	writeFile(file: rendered, text: out)
+	vars.each { k, v ->
+		if (v == null || v.toString().trim().isEmpty()) {
+			error("renderManifest: empty value for ${k} in ${name}")
+		}
+	}
+	def rendered = "rendered/${name}"
+	def fmt = vars.keySet().collect { "\$${it}" }.join(' ')
+	def q = { val -> "'" + val.toString().replace("'", "'\\''") + "'" }
+	def exports = vars.collect { k, v -> "export ${k}=${q(v)}" }.join('\n')
+	sh """
+		set -euo pipefail
+		mkdir -p rendered
+		${exports}
+		envsubst '${fmt}' < deploy/k8s/cd/${name} > ${rendered}
+		# fail closed: a surviving \${ placeholder outside comments means a var was
+		# missing from the envsubst scope list — never apply a half-rendered manifest
+		if grep -vE '^[[:space:]]*#' ${rendered} | grep -qF '\${'; then
+			echo "renderManifest: unsubstituted placeholder in ${rendered}" >&2
+			exit 1
+		fi
+	"""
 	return rendered
 }
 
@@ -116,19 +135,19 @@ def ensureNamespace(String ns, String envName) {
 		python3 -c "import base64,json,os; auth=base64.b64encode((os.environ['DOCKERHUB_CRED_USR']+':'+os.environ['DOCKERHUB_CRED_PSW']).encode()).decode(); cfg={'auths':{os.environ['REGISTRY']:{'username':os.environ['DOCKERHUB_CRED_USR'],'password':os.environ['DOCKERHUB_CRED_PSW'],'auth':auth}}}; print(base64.b64encode(json.dumps(cfg).encode()).decode())"
 	''', returnStdout: true).trim()
 	def objects = [
-		renderManifest('namespace.yaml.tpl', [NS: ns, ENV: envName]),
-		renderManifest('regcred.yaml.tpl', [NS: ns, DOCKERCONFIGJSON_B64: dockerCfgJsonB64]),
+		renderManifest('namespace.yaml', [NS: ns, ENV: envName]),
+		renderManifest('regcred.yaml', [NS: ns, DOCKERCONFIGJSON_B64: dockerCfgJsonB64]),
 	]
 	sh "kubectl apply -f " + objects.join(" -f ")
 }
 
 // Render + apply the app manifests (deployment + service) and wait for rollout.
 def deployApp(String ns, String envName, String image, String replicas, String appVersion) {
-	def dep = renderManifest('deployment.yaml.tpl', [
+	def dep = renderManifest('deployment.yaml', [
 		NS: ns, ENV: envName, APP_VERSION: appVersion,
 		IMAGE: image, BUILD_NUMBER: env.BUILD_NUMBER, REPLICAS: replicas,
 	])
-	def svc = renderManifest('service.yaml.tpl', [NS: ns, ENV: envName])
+	def svc = renderManifest('service.yaml', [NS: ns, ENV: envName])
 	sh """
 		set -euo pipefail
 		kubectl apply -f ${dep}
@@ -394,7 +413,7 @@ pipeline {
 					// the outer Docker daemon (docker cp) cannot see.
 					def hostDir = "/devsecops-demo/dast-${ns}"
 					echo "scanning ${dastUrl} with in-cluster ZAP baseline (report via ${env.KIND_NODE}:${hostDir})"
-					def job = renderManifest('dast-job.yaml.tpl', [
+					def job = renderManifest('dast-job.yaml', [
 						NS: ns, ENV: params.ENVIRONMENT, DAST_URL: dastUrl, BUILD_NUMBER: env.BUILD_NUMBER,
 						DAST_REPORTS_HOST_DIR: hostDir,
 					])
@@ -456,7 +475,7 @@ pipeline {
 			steps {
 				script {
 					def ns = "demo-${params.ENVIRONMENT}"
-					def smoke = renderManifest('smoke-job.yaml.tpl', [
+					def smoke = renderManifest('smoke-job.yaml', [
 						NS: ns, ENV: params.ENVIRONMENT,
 						SVC_URL: "notes.${ns}.svc.cluster.local:80", BUILD_NUMBER: env.BUILD_NUMBER,
 					])
@@ -469,7 +488,7 @@ pipeline {
 							python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for i in d['items'] for e in i.get('endpoints',[]) if (e.get('conditions') or {}).get('ready')))")
 						echo "ready endpoints: \$READY"
 						[ "\$READY" -ge 1 ] || { echo 'no ready endpoints — deployment not healthy'; exit 1; }
-						# in-cluster smoke test as a Job (deploy/k8s/cd/smoke-job.yaml.tpl)
+						# in-cluster smoke test as a Job (deploy/k8s/cd/smoke-job.yaml)
 						kubectl delete job smoke-test -n ${ns} --ignore-not-found --wait=true || true
 						kubectl apply -f ${smoke}
 						kubectl wait --for=condition=complete job/smoke-test -n ${ns} --timeout=3m
