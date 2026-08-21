@@ -145,3 +145,10 @@
   - New stage "Package & Sign Chart" (before Deploy) → `env.CHART_TGZ`; Deploy/DAST/Verification/Production all call `helmDeploy(ns, env, CHART_TGZ, extraSets)`.
 - Evidence: `helm lint` clean; `helm template` staging=6 objects / production=3 (no dast, no secret when dockerConfigJson empty); all 6 pass `kubectl apply --dry-run=server` (ns pre-created). E2E on live kind: sign+verify (Chart Hash Verified), app-only deploy, dast Job created+recreated-after-delete, smoke Job created, app-only upgrade removes Jobs. Tamper test: appending a byte to the .tgz → "sha256 sum does not match" (detected).
 - Reuse: `tools/generate-helm-signing-key.sh` makes the key pair (isolated GNUPGHOME, armored exports). Demo key pair is committed (public) + gitignored (secret) so the pipeline runs out of the box. If the agent lacks `helm`/`gpg`, the Package & Sign Chart stage fails fast. The base values file is written in Deploy and REUSED by DAST/Verification/Production (same digest).
+
+## 2026-08-21 — DAST report dir: per-run random suffix, no pre-scan rm -rf
+
+- Context: User flagged the DAST stage's `rm -rf <hostDir>` (run before the scan to clear stale state) as dangerous — a misconfigured/empty hostPath would delete critical node state, and a fixed name (`dast-<ns>`) collides across concurrent builds.
+- Decision: Each run writes to its OWN fresh hostPath dir `reports/dast-<BUILD_NUMBER>-<uuid>` (base stays under `reports/` in the node container's rootfs). No pre-scan `rm -rf` (the fresh dir is empty by definition); after the report is pulled out via `docker cp`, ONLY that unique per-run leaf is removed (safe cleanup). `runId = "${env.BUILD_NUMBER}-${UUID.randomUUID()}"`.
+- Evidence: live-kind test — fresh dir created (no rm), report written + pulled out via `docker cp`, unique leaf removed, sibling dirs untouched.
+- Reuse: the per-run leaf is what makes the post-copy `rm -rf` safe; never `rm -rf` a shared/stale hostPath before a scan.
