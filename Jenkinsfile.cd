@@ -586,27 +586,38 @@ pipeline {
 
 	post {
 		always {
-			// print the resolved image name for downstream consumers, then remove
-			// the locally built image (it is already on the registry)
+			// Best-effort post processing. The workspace-dependent steps (sh /
+			// archiveArtifacts) are guarded: when the build fails EARLY — e.g. a
+			// missing credential tears down the agent context before the workspace
+			// is established — they would otherwise throw a confusing
+			// MissingContextVariableException (hudson.FilePath) that MASKS the real
+			// error. The guard logs a clear message and lets the real failure stand.
 			script {
-				if (env.DOCKER_IMAGE) {
-					echo "image: ${env.DOCKER_IMAGE}"
-					sh "docker rmi -f ${env.DOCKER_IMAGE} || true"
+				try {
+					// print the resolved image name, then remove the locally built
+					// image (it is already on the registry)
+					if (env.DOCKER_IMAGE) {
+						echo "image: ${env.DOCKER_IMAGE}"
+						sh "docker rmi -f ${env.DOCKER_IMAGE} || true"
+					}
+					// remove the per-build GPG keyrings + the sensitive base values
+					// file (the signed chart .tgz/.prov are not secret — cleanWs
+					// handles them)
+					sh 'rm -f rendered/secring.gpg rendered/pubring.gpg rendered/values-base.yaml'
+					archiveArtifacts artifacts: '''
+						reports/sbom.cdx.image.json, reports/digest.txt, reports/trivy.sarif,
+						reports/security-report/report.md, gate-decision.json, gated.jsonl,
+						reports/zap-report.json, reports/zap-report.html, reports/zap-exit.txt,
+						gate-decision-dast.json, gated-dast.jsonl, reports/security-report-dast/report.md,
+						verification-rbac.txt, verification-netpol.json, verification-events.txt,
+						audit/exceptions-audit.jsonl,
+						notes-app-*.tgz.prov
+					'''.replaceAll(/\s+/, ' ').trim(),
+					  allowEmptyArchive: true, fingerprint: true
+				} catch (Exception e) {
+					echo "post cleanup/archival skipped (workspace unavailable — likely an early failure such as a missing credential): ${e.message}"
 				}
-				// remove the per-build GPG keyrings + the sensitive base values file
-				// (the signed chart .tgz/.prov are not secret — cleanWs handles them)
-				sh 'rm -f rendered/secring.gpg rendered/pubring.gpg rendered/values-base.yaml'
 			}
-			archiveArtifacts artifacts: '''
-				reports/sbom.cdx.image.json, reports/digest.txt, reports/trivy.sarif,
-				reports/security-report/report.md, gate-decision.json, gated.jsonl,
-				reports/zap-report.json, reports/zap-report.html, reports/zap-exit.txt,
-				gate-decision-dast.json, gated-dast.jsonl, reports/security-report-dast/report.md,
-				verification-rbac.txt, verification-netpol.json, verification-events.txt,
-				audit/exceptions-audit.jsonl,
-				notes-app-*.tgz.prov
-			'''.replaceAll(/\s+/, ' ').trim(),
-			  allowEmptyArchive: true, fingerprint: true
 		}
 		success { echo 'CD OK — image built, scanned, gated, deployed and (PROMOTE_TO_PROD) promoted' }
 		failure { echo 'CD FAILED' }
