@@ -451,14 +451,19 @@ pipeline {
 					// NOTE: the dir must live on the node's rootfs, NOT under /tmp —
 					// the node's /tmp is a tmpfs mounted INSIDE the container, which
 					// the outer Docker daemon (docker cp) cannot see.
-					def hostDir = "/devsecops-demo/dast-${ns}"
+					// Per-run random suffix: each scan writes to its OWN fresh dir under
+					// reports/ — no collision between concurrent builds, and no need to
+					// rm -rf a shared/stale dir up front (the fresh dir is empty by
+					// definition). It is removed after the report is pulled out (below);
+					// it is never rm -rf'd before the scan.
+					def runId = "${env.BUILD_NUMBER}-${UUID.randomUUID()}"
+					def hostDir = "$WORKSPACE/reports/dast-${runId}"
 					echo "scanning ${dastUrl} with in-cluster ZAP baseline (report via ${env.KIND_NODE}:${hostDir})"
 					// pre-create the report dir in the node container (ZAP runs as uid 1000)
 					// and clear any stale dast Job from a previous build (a completed Job
 					// within its TTL window would otherwise be re-used, not re-run).
 					sh """
 						set -euo pipefail
-						docker exec "${env.KIND_NODE}" rm -rf "${hostDir}"
 						docker exec "${env.KIND_NODE}" mkdir -p "${hostDir}"
 						docker exec "${env.KIND_NODE}" chmod 777 "${hostDir}"
 						kubectl delete job dast-scan -n ${ns} --ignore-not-found --wait=true || true
@@ -485,6 +490,7 @@ pipeline {
 						docker cp "${env.KIND_NODE}:${hostDir}/zap-report.json" reports/zap-report.json 2>/dev/null || true
 						docker cp "${env.KIND_NODE}:${hostDir}/zap-report.html" reports/zap-report.html 2>/dev/null || true
 						docker cp "${env.KIND_NODE}:${hostDir}/zap-exit.txt" reports/zap-exit.txt 2>/dev/null || true
+						# safe cleanup: unique per-run leaf, report already pulled out above
 						docker exec "${env.KIND_NODE}" rm -rf "${hostDir}"
 						kubectl delete job dast-scan -n ${ns} --ignore-not-found --wait=true
 						# FAIL CLOSED: a broken/missing scan must never look like a pass
