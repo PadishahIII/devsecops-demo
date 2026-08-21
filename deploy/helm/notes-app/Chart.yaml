@@ -1,0 +1,18 @@
+apiVersion: v2
+name: notes-app
+description: >-
+  DevSecOps demo — the notes app plus its in-cluster verification Jobs
+  (ZAP DAST scan, post-deploy smoke test). One chart, conditionally rendered
+  per environment; the CD pipeline enables the verification Jobs progressively
+  so the verification flow stays explicit and gated.
+type: application
+# Chart (package) version — bumped on chart changes; used by helm package/sign.
+version: 0.1.0
+# Application version — the notes app itself (independent of chart version).
+appVersion: "1.0.0"
+keywords:
+  - devsecops
+  - dast
+  - notes
+maintainers:
+  - name: devsecops-demo

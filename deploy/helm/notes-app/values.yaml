@@ -1,0 +1,60 @@
+# Default values for the notes-app chart.
+#
+# Layering (later files override earlier ones):
+#   1. values.yaml            — these defaults
+#   2. values-<env>.yaml      — environment overrides (namespace, replicas, ...)
+#   3. <sensitive>.yaml       — pipeline-generated, holds registry.dockerConfigJson
+#   4. --set flags            — pipeline-injected per build (image.digest, Jobs)
+#
+# SENSITIVE VALUES: registry.dockerConfigJson is NEVER committed and NEVER passed
+# via --set (it would leak into the process list / build logs). The pipeline writes
+# it to a workspace-only values file (chmod 600, deleted after the build).
+
+# The target namespace is controlled by the `helm -n <ns>` flag (templates use
+# .Release.Namespace). The chart creates the namespace (templates/namespace.yaml)
+# for its labels); the pipeline passes -n demo-<environment>.
+# The `environment` value below is a separate label, not the namespace name.
+
+# Logical environment: staging | production. Surfaced as a label for
+# audit/traceability and to keep the two clusters' objects distinguishable.
+environment: staging
+
+# Pipeline build number — rendered into the `pipeline: cd-<n>` label so you can
+# trace which CD build produced a given release. Empty = label omitted.
+buildNumber: ""
+
+# App version label (independent of the chart version).
+appVersion: "1.0.0"
+
+replicas: 2
+
+image:
+  # Digest-pinned: the pipeline ALWAYS sets image.digest (build once, promote the
+  # same digest — docs/DESIGN.md decision #4). When digest is empty the chart
+  # falls back to repository:tag (local/dev only).
+  repository: ghcr.io/acme/notes
+  tag: latest
+  digest: ""
+
+registry:
+  # Name of the dockerconfigjson pull secret the deployment references.
+  secretName: regcred
+  # base64 docker config.json. Injected by the pipeline (sensitive) — see above.
+  dockerConfigJson: ""
+
+# In-cluster ZAP DAST scan Job. STAGING-ONLY: the pipeline sets dast.enabled=true
+# for staging and never for production (aggressive active scans on live prod are
+# a risk). The pipeline also sets url + reportsHostDir when enabling it.
+dast:
+  enabled: false
+  url: ""
+  # hostPath dir INSIDE the kind node container where the report is written so it
+  # survives container exit (kubectl cp can't read a completed pod). The pipeline
+  # sets this to /devsecops-demo/dast-<ns> and pulls it out with `docker cp`.
+  reportsHostDir: ""
+
+# Post-deployment smoke test Job. Enabled for both environments (it only does
+# benign health/CRUD/search against the ClusterIP service).
+smoke:
+  enabled: false
+  svcUrl: ""

@@ -1,0 +1,24 @@
+{{/*
+Post-install notes. Printed by `helm install`/`upgrade` to the operator.
+*/}}
+notes-app {{ .Chart.Version }} deployed to namespace "{{ .Release.Namespace }}" ({{ .Values.environment }}).
+
+  app image : {{ include "notes-app.image" . }}
+  replicas  : {{ .Values.replicas }}
+  service   : http://notes.{{ .Release.Namespace }}.svc.cluster.local:80
+
+{{- if .Values.dast.enabled }}
+
+  DAST scan Job (dast-scan) is ENABLED — the CD pipeline will wait for it,
+  pull the report from the kind node, and run the vuln gate.
+{{- else }}
+
+  DAST scan Job is disabled (correct for production — no active scans on live prod).
+{{- end }}
+{{- if .Values.smoke.enabled }}
+
+  Smoke test Job (smoke-test) is ENABLED — the CD pipeline will wait for it.
+{{- end }}
+
+Verify rollout:
+  kubectl rollout status deployment/notes -n {{ .Release.Namespace }} --timeout=5m

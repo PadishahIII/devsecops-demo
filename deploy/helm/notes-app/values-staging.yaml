@@ -1,0 +1,6 @@
+# Staging overrides. The verification Jobs (dast/smoke) are NOT enabled here —
+# they are pipeline concerns, toggled by the CD pipeline at the right stage
+# (see Jenkinsfile.cd). This file only carries environment-specific config.
+# The namespace is set by the pipeline's `helm -n demo-staging` flag.
+environment: staging
+replicas: 2

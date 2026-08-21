@@ -1,0 +1,7 @@
+# Production overrides. DAST is deliberately NOT run against production
+# (aggressive active scans on a live prod service); the hotfix path is gated on
+# static findings + post-deployment verification instead. The smoke test still
+# runs (benign in-cluster checks).
+# The namespace is set by the pipeline's `helm -n demo-production` flag.
+environment: production
+replicas: 3

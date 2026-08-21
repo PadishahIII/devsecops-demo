@@ -227,5 +227,9 @@ gated.jsonl
 gate-decision.json
 raw/
 reports/security-report/
-keys
 ._keys
+# cosign signing keys (root keys/ dir, private key) — never commit
+/keys/
+# Helm chart GPG signing: ignore the private key, allow the committed public key
+deploy/helm/keys/*
+!deploy/helm/keys/public.asc

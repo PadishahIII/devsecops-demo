@@ -1,0 +1,16 @@
+# ClusterIP service — the DAST scanner Job and smoke test target it in-cluster
+# at http://notes.<ns>.svc.cluster.local:80 (no ingress needed on the kind node).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "notes-app.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "notes-app.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: {{ include "notes-app.name" . }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
