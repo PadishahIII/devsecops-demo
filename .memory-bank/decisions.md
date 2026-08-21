@@ -152,3 +152,15 @@
 - Decision: Each run writes to its OWN fresh hostPath dir `reports/dast-<BUILD_NUMBER>-<uuid>` (base stays under `reports/` in the node container's rootfs). No pre-scan `rm -rf` (the fresh dir is empty by definition); after the report is pulled out via `docker cp`, ONLY that unique per-run leaf is removed (safe cleanup). `runId = "${env.BUILD_NUMBER}-${UUID.randomUUID()}"`.
 - Evidence: live-kind test — fresh dir created (no rm), report written + pulled out via `docker cp`, unique leaf removed, sibling dirs untouched.
 - Reuse: the per-run leaf is what makes the post-copy `rm -rf` safe; never `rm -rf` a shared/stale hostPath before a scan.
+
+## 2026-08-21 — SETUP_DEMO.md environment setup guide (bd devsecops-demo-nhv)
+
+- Context: User wanted a single doc to take a fresh Jenkins agent to "ready to run the pipeline". Explicitly: tool binary installation (helm/kind/kubectl/gpg/cosign) is OUT of scope — the pipeline/agent bootstrap handles it.
+- Decisions:
+  - Doc covers: Docker Hub (repo padishahiii/demo-web-app + access token), kind cluster (must be pre-created, name `kind`, KIND_NODE=kind-control-plane, agent Docker daemon must run the node), cosign keypair (empty passphrase — pipeline signs with COSIGN_PASSWORD=""), helm GPG key (tools/generate-helm-signing-key.sh; repo ships a demo pair), GitHub App, Jenkins plugins, credentials table, job config, verification, troubleshooting.
+  - **GitHub App + plugins were INFERRED** (not in the pipeline code): the pipeline itself uses no GitHub credentials. The user's existing Jenkins creds (githubapp-id=4646534 secret-text, github-padishahiii user+PAT) reveal the intended integration: GitHub App = branch source + webhook trigger (GitHub plugin) + check-run reporting (GitHub Checks plugin). App perms: Contents RW, Checks RW, Metadata R; callback <jenkins>/github-webhook.
+  - Plugin list inferred from pipeline steps: Pipeline Aggregator, Docker Pipeline (docker agent/withRegistry/build/push), Credentials Binding (env `credentials()` + file), Workspace Cleanup (cleanWs), Timestamper, Git, JUnit (CI post), GitHub, GitHub Checks. Pipeline Utility Steps explicitly NOT needed (uses JsonSlurper, not readJSON).
+  - Two Multibranch Pipeline jobs, same repo, different Script Path: Jenkinsfile.ci / Jenkinsfile.cd.
+  - Expected demo outcomes documented: CI FAILS at gate (gitleaks seeded ds-demo token, fail_tools categorical); CD staging deploys OK but DAST gate FAILS (seeded /demo/unsafe-search SQLi High). Both are "the demo working".
+- Evidence: SETUP_DEMO.md (11 sections); facts cross-checked against Jenkinsfile.ci/.cd, security/policy.yaml (fail_tools: [gitleaks]), security/exceptions.yaml (EXC-0042), security/gitleaks.toml (demo-api-token rule), app/app.py (/demo/unsafe-search).
+- Reuse: the credential IDs are the contract — dockerhub, cosign-key, cosign-pub, kind-kubeconfig, helm-signing-key (+ githubapp-id, github-padishahiii for the GitHub integration). CI uses NO credentials.
