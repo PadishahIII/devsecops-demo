@@ -22,6 +22,11 @@
 #   3. Delete the private key file (it is now in Jenkins)
 set -euo pipefail
 
+command -v gpg >/dev/null || {
+	echo 'ERROR: gpg not found — install it first (e.g. brew install gnupg)' >&2
+	exit 1
+}
+
 NAME="${1:-devsecops-demo}"
 EMAIL="${2:-devsecops-demo@localhost}"
 KEYDIR="$(mktemp -d)"
