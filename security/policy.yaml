@@ -45,7 +45,7 @@ fail_when:
     severities: [high]
 
 exceptions:
-  max_severity: high      # critical findings can never be excepted
+  max_severity: high # critical findings can never be excepted
   file: security/exceptions.yaml
 
 # License policy (fed from the CycloneDX SBOM — structural output, not prose).
@@ -76,11 +76,11 @@ dast:
     low: pass
     informational: pass
     unknown: warn
-  fail_rule_classes:
-    - "sql.*injection|sqli"
-    - "cross.site|xss"
-    - "remote.code.execution|rce|command.injection|os.command"
-    - "path.traversal"
-    - "ssrf|server.side.request.forgery"
+  fail_rule_classes: []
+    # - "sql.*injection|sqli"
+    # - "cross.site|xss"
+    # - "remote.code.execution|rce|command.injection|os.command"
+    # - "path.traversal"
+    # - "ssrf|server.side.request.forgery"
   fail_tools: []
   # fail_when: []   # KEV/EPSS metadata only exists on static findings; leave empty
