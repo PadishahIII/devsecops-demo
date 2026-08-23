@@ -3,5 +3,9 @@
 # static findings + post-deployment verification instead. The smoke test still
 # runs (benign in-cluster checks).
 # The namespace is set by the pipeline's `helm -n demo-production` flag.
+# Single replica: the app keeps its notes in a per-pod SQLite file, so a
+# multi-replica rollout would serve inconsistent data across pods (and the
+# smoke Job's create→search would hit different pods). Scale out needs a
+# shared DB backend, not more replicas.
 environment: production
-replicas: 3
+replicas: 1

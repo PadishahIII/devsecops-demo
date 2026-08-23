@@ -23,6 +23,11 @@ import os
 from flask import Flask, abort, redirect, render_template, request, session, url_for
 import config
 import db
+# Ensure the SQLite schema exists before the first request. Idempotent and
+# safe across gunicorn workers — runs once per process at import.
+os.makedirs(os.path.dirname(config.DB_PATH) or ".", exist_ok=True)
+db.init_db(config.DB_PATH)
+
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", config.APP_SECRET_KEY)
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"

@@ -2,5 +2,9 @@
 # they are pipeline concerns, toggled by the CD pipeline at the right stage
 # (see Jenkinsfile.cd). This file only carries environment-specific config.
 # The namespace is set by the pipeline's `helm -n demo-staging` flag.
+# Single replica: the app keeps its notes in a per-pod SQLite file, so a
+# multi-replica rollout would serve inconsistent data across pods (and the
+# smoke Job's create→search would hit different pods). Scale out needs a
+# shared DB backend, not more replicas.
 environment: staging
-replicas: 2
+replicas: 1

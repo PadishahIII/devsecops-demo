@@ -26,6 +26,9 @@ buildNumber: ""
 # App version label (independent of the chart version).
 appVersion: "1.0.0"
 
+# Replicas per environment are set in values-<env>.yaml. Keep them at 1: the
+# app stores notes in a per-pod SQLite file, so multi-replica serves
+# inconsistent data (see values-staging.yaml).
 replicas: 2
 
 image:
