@@ -81,6 +81,7 @@ Two pipelines, one repo:
    New Access Token (read/write on the repo).
 
 **Jenkins credential** `dockerhub` (Username with password):
+
 - Username: `padishahiii`
 - Password: `<access token>`
 
@@ -141,6 +142,7 @@ cosign generate key-pair keys/cosign.key
 ```
 
 **Jenkins credentials** (both Secret file):
+
 - `cosign-key` → `keys/cosign.key` (private)
 - `cosign-pub` → `keys/cosign.pub` (public)
 
@@ -157,6 +159,7 @@ tools/generate-helm-signing-key.sh
 ```
 
 Writes:
+
 - `deploy/helm/keys/public.asc` — **commit this** (used to verify).
 - `deploy/helm/keys/helm-signing-key.asc` — **gitignored** (the private key).
 
@@ -202,6 +205,7 @@ GitHub App**:
 - Note the **App ID** (numeric, shown on the settings page), e.g. `4646534`.
 
 **Jenkins credentials:**
+
 - `githubapp-id` (Secret text): the App ID, e.g. `4646534`.
 - The `.pem` is entered into the plugin configs in section 9.1 (or stored as a
   Secret file credential and referenced).
@@ -213,7 +217,7 @@ App settings → **Install App** → select your account/org → tick the
 
 ### 6.4 (Optional) GitHub user credential
 
-`github-padishahiii` (Username with password): GitHub username + a fine-grained
+`github-<username>` (Username with password): GitHub username + a fine-grained
 **PAT** with `Contents: read` on the repo. Use as a fallback for SCM checkout /
 API access when the App's installation token is not used.
 
@@ -224,17 +228,17 @@ API access when the App's installation token is not used.
 Install via **Manage Jenkins → Plugins → Available**. ("Pipeline: Aggregator"
 pulls in the core workflow plugins.)
 
-| Plugin | Why the pipeline needs it |
-| --- | --- |
-| **Pipeline: Aggregator** (`workflow-aggregator`) | declarative `pipeline {}`, `script`, `input`, `properties`, multibranch |
-| **Docker Pipeline** (`docker-workflow`) | `agent { docker {} }`, `docker.withRegistry`, `docker.build`, `docker.image().push()` |
-| **Credentials Binding** (`credentials-binding`) | `DOCKERHUB_CRED = credentials('dockerhub')` in `environment {}`, `file(...)` bindings |
-| **Workspace Cleanup** (`ws-cleanup`) | `cleanWs()` in the cleanup stage |
-| **Timestamper** (`timestamper`) | `timestamps()` option |
-| **Git** (`git`) | `checkout scm` |
-| **JUnit** (`junit`) | `junit 'app/reports/pytest.xml'` (CI post) |
-| **GitHub** (`github`) | multibranch branch source + webhook trigger (uses the GitHub App) |
-| **GitHub Checks** (`github-checks`) | check-run reporting to PRs (configured with the GitHub App) |
+| Plugin                                           | Why the pipeline needs it                                                             |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| **Pipeline: Aggregator** (`workflow-aggregator`) | declarative `pipeline {}`, `script`, `input`, `properties`, multibranch               |
+| **Docker Pipeline** (`docker-workflow`)          | `agent { docker {} }`, `docker.withRegistry`, `docker.build`, `docker.image().push()` |
+| **Credentials Binding** (`credentials-binding`)  | `DOCKERHUB_CRED = credentials('dockerhub')` in `environment {}`, `file(...)` bindings |
+| **Workspace Cleanup** (`ws-cleanup`)             | `cleanWs()` in the cleanup stage                                                      |
+| **Timestamper** (`timestamper`)                  | `timestamps()` option                                                                 |
+| **Git** (`git`)                                  | `checkout scm`                                                                        |
+| **JUnit** (`junit`)                              | `junit 'app/reports/pytest.xml'` (CI post)                                            |
+| **GitHub** (`github`)                            | multibranch branch source + webhook trigger (uses the GitHub App)                     |
+| **GitHub Checks** (`github-checks`)              | check-run reporting to PRs (configured with the GitHub App)                           |
 
 > The pipeline deliberately avoids **Pipeline Utility Steps** — it parses JSON
 > with Groovy's built-in `JsonSlurper` instead of `readJSON` — so that plugin is
@@ -246,15 +250,15 @@ pulls in the core workflow plugins.)
 
 All at **System** (global) scope.
 
-| ID | Kind | Value / source |
-| --- | --- | --- |
-| `dockerhub` | Username with password | Docker Hub user + access token (§3) |
-| `cosign-key` | Secret file | `keys/cosign.key` (§5.1) |
-| `cosign-pub` | Secret file | `keys/cosign.pub` (§5.1) |
-| `kind-kubeconfig` | Secret file | `kind get kubeconfig --name kind` (§4) |
-| `helm-signing-key` | Secret file | `deploy/helm/keys/helm-signing-key.asc` (§5.2) |
-| `githubapp-id` | Secret text | GitHub App ID, e.g. `4646534` (§6.2) |
-| `github-padishahiii` | Username with password | GitHub user + PAT (§6.4) |
+| ID                  | Kind                   | Value / source                                 |
+| ------------------- | ---------------------- | ---------------------------------------------- |
+| `dockerhub`         | Username with password | Docker Hub user + access token (§3)            |
+| `cosign-key`        | Secret file            | `keys/cosign.key` (§5.1)                       |
+| `cosign-pub`        | Secret file            | `keys/cosign.pub` (§5.1)                       |
+| `kind-kubeconfig`   | Secret file            | `kind get kubeconfig --name kind` (§4)         |
+| `helm-signing-key`  | Secret file            | `deploy/helm/keys/helm-signing-key.asc` (§5.2) |
+| `githubapp-id`      | Secret text            | GitHub App ID, e.g. `4646534` (§6.2)           |
+| `github-<username>` | Username with password | GitHub user + PAT (§6.4)                       |
 
 ---
 
@@ -266,6 +270,7 @@ script paths.
 ### 9.1 Configure the GitHub connection (once)
 
 **Manage Jenkins → Configuration → GitHub:**
+
 - Add a **GitHub App** (App ID + the `.pem` private key).
 - Add a **GitHub Server** for `https://github.com` using that App.
 
@@ -286,15 +291,16 @@ the App ID + private key.
 
 CD parameters (set at build time):
 
-| Parameter | Default | Meaning |
-| --- | --- | --- |
-| `REPOSITORY` | `padishahiii/demo-web-app` | Docker Hub repo to push to |
-| `ENVIRONMENT` | `staging` | `staging` = normal path; `production` = hotfix (straight to prod) |
-| `APP_VERSION` | `1.0.0` | app version + immutable image tag (valid docker tag, ≤63 chars) |
-| `RUN_DAST` | `true` | run in-cluster ZAP after the staging deploy (never against prod) |
-| `PROMOTE_TO_PROD` | `false` | staging only: promote the same digest after gate + verification (manual approval) |
+| Parameter         | Default                    | Meaning                                                                           |
+| ----------------- | -------------------------- | --------------------------------------------------------------------------------- |
+| `REPOSITORY`      | `padishahiii/demo-web-app` | Docker Hub repo to push to                                                        |
+| `ENVIRONMENT`     | `staging`                  | `staging` = normal path; `production` = hotfix (straight to prod)                 |
+| `APP_VERSION`     | `1.0.0`                    | app version + immutable image tag (valid docker tag, ≤63 chars)                   |
+| `RUN_DAST`        | `true`                     | run in-cluster ZAP after the staging deploy (never against prod)                  |
+| `PROMOTE_TO_PROD` | `false`                    | staging only: promote the same digest after gate + verification (manual approval) |
 
 Common runs:
+
 - **Deploy to staging:** `ENVIRONMENT=staging`, `PROMOTE_TO_PROD=false`
 - **Staging → production:** `ENVIRONMENT=staging`, `PROMOTE_TO_PROD=true`
 - **Hotfix to production:** `ENVIRONMENT=production`, `PROMOTE_TO_PROD=false`
