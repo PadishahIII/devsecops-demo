@@ -542,9 +542,19 @@ pipeline {
 					helmDeploy(ns, params.ENVIRONMENT, env.CHART_TGZ,
 						"--set smoke.enabled=true --set smoke.svcUrl=${svcUrl}")
 					// 3. Wait for the smoke Job, capture logs, clean up, gather evidence.
+					// NOTE: --for=condition=complete does NOT fire for a Failed Job (backoffLimit: 0
+					// means a failing check ends the Job in Failed, not Complete) — without the
+					// fallback below, a fast-failing Job just burns the full 3m and dies with a bare
+					// "timed out" and no logs. The fallback surfaces the Job/pod state + logs first.
 					sh """
 						set -euo pipefail
-						kubectl wait --for=condition=complete job/smoke-test -n ${ns} --timeout=3m
+						kubectl wait --for=condition=complete job/smoke-test -n ${ns} --timeout=3m || {
+							kubectl get job smoke-test -n ${ns} -o wide || true
+							kubectl get pods -n ${ns} -l job-name=smoke-test -o wide || true
+							kubectl logs job/smoke-test -n ${ns} --tail=50 || true
+							echo 'smoke Job did not complete in time'
+							exit 1
+						}
 						kubectl logs job/smoke-test -n ${ns} --tail=50 || true
 						kubectl delete job smoke-test -n ${ns} --ignore-not-found --wait=true
 						# evidence for the archive
