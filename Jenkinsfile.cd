@@ -75,9 +75,12 @@ def pretty_json(String workspace, String input, String output) {
 // enough: SBOM license findings keep the stream non-empty even when trivy
 // died, which would otherwise let an unscanned image through).
 def runGate(String decisionFile, String gatedFile, String reportDir, List<String> expected = []) {
+	// Missing/empty artifact check via the shell: the sandbox does NOT permit
+	// `new java.io.File` (RejectedAccessException — it is absent from the default
+	// whitelist), and `[ -f p ] && [ -s p ]` is exactly `isFile() && length()>0`.
+	// Paths are trusted literals from the runGate call sites.
 	def missing = expected.findAll { p ->
-		def f = new File(p)
-		!f.isFile() || f.length() == 0
+		sh(script: "[ -f '${p}' ] && [ -s '${p}' ]", returnStatus: true) != 0
 	}
 	if (missing) {
 		error "gate ERROR — missing scanner artifact(s): ${missing.join(', ')} — a broken/absent scan must never look like a pass"
