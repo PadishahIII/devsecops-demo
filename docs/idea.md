@@ -79,11 +79,13 @@ discover → triage → SLA → fix → verify → exception
 ## Progress
 
 - [x] build the minimal pipeline with tool integration and minimal gates, run on a simple repo -> to validate it works
-- [ ] Extend the demo to cover each blocking case
-- [ ] ~~Add AI triage and add metrics~~
+      ~~- [ ] Extend the demo to cover each blocking case~~
+      ~~- [ ] Add AI triage and add metrics~~
 - [x] Design and implement more complex gates
 - [ ] Document the design and decisions
-- [ ] Show the demo by screen shots
+      threat modeling -> Chinese version -> Vuln management (optional)
+- [x] Show the demo by screen shots
+- [ ] Prepare introduction
 
 **Documentation**
 
