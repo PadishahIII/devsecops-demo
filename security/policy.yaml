@@ -76,8 +76,8 @@ dast:
     low: pass
     informational: pass
     unknown: warn
-  fail_rule_classes: []
-    # - "sql.*injection|sqli"
+  fail_rule_classes:
+    - "sql.*injection|sqli"
     # - "cross.site|xss"
     # - "remote.code.execution|rce|command.injection|os.command"
     # - "path.traversal"
