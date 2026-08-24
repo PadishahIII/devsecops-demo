@@ -72,7 +72,6 @@ pipeline {
                             git /src \
                             -c /src/security/gitleaks.toml \
                             --redact \
-			    --log-opts="origin/main..HEAD" \
                             --report-format sarif \
                             --report-path /src/reports/gitleaks.sarif
                     """

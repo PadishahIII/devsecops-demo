@@ -41,21 +41,20 @@ flowchart LR
     M --> F
 ```
 
-
 ## Security methods included
 
-| Method | Tool | Phase | Gate behavior | Decision |
-| --- | --- | --- | --- | --- |
-| Secret scanning | Gitleaks `v8.21.2` (+ org rule `demo-api-token`) | CI | **Fails categorically** (`fail_tools`) — never exceptable | A leaked secret is a leak regardless of severity |
-| SAST | Semgrep `1.155.0` (`p/security-audit` + org rules) | CI | Fail by **exploitability class** (SQLi/SSRF/deserial/RCE), warn otherwise | Vendor severity undervalues reachable injection |
-| SCA / SBOM | Syft `v1.51.0` + Grype `v0.115.0` | CI (source) + CD (image) | Severity defaults + **KEV/EPSS overrides** | SBOM-first: CycloneDX out, Grype consumes SBOM |
-| IaC / manifest | Trivy `0.74.0` config + **custom Rego** (DS-001/2/3) | CI | Org severity OVERRIDES vendor severity; CRITICAL Rego = fail | Policy-as-code: org risk > vendor labels |
-| Image scanning | Trivy `0.74.0` + **OpenVEX** | CD pre-sign | Fail-closed gate #1 before anything is signed | Never sign/attest an image that failed its gate |
-| Image signing + attestation | Cosign (key) | CD | Sign digest + SBOM `cyclonedx` attestation, then **self-verify** | Identity (sig) ≠ inventory (SBOM) |
-| Chart provenance | Helm `package --sign` (GPG) | CD | `helm verify` with the **committed** public key | Deploy-unit authenticity; tamper detected |
-| DAST | ZAP baseline, in-cluster Job | CD (staging) | Stricter `dast:` policy — high=fail, medium=warn | A finding on a live endpoint is worse than a static hit |
-| Runtime verification | k8s probes + in-cluster smoke Job | CD | Hard-fail stage with diagnostics-fallback | Probes ≠ business logic; smoke proves the app works |
-| Policy gate | `tools/{normalize,gate,report}.py` | CI + CD | One decision point per gate; exit codes 0/1/2/3 → pass/warn/fail/error | Scanners report; **the gate decides** |
+| Method                      | Tool                                                 | Phase                    | Gate behavior                                                             | Decision                                                |
+| --------------------------- | ---------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Secret scanning             | Gitleaks `v8.21.2` (+ org rule `demo-api-token`)     | CI                       | **Fails categorically** (`fail_tools`) — never exceptable                 | A leaked secret is a leak regardless of severity        |
+| SAST                        | Semgrep `1.155.0` (`p/security-audit` + org rules)   | CI                       | Fail by **exploitability class** (SQLi/SSRF/deserial/RCE), warn otherwise | Vendor severity undervalues reachable injection         |
+| SCA / SBOM                  | Syft `v1.51.0` + Grype `v0.115.0`                    | CI (source) + CD (image) | Severity defaults + **KEV/EPSS overrides**                                | SBOM-first: CycloneDX out, Grype consumes SBOM          |
+| IaC / manifest              | Trivy `0.74.0` config + **custom Rego** (DS-001/2/3) | CI                       | Org severity OVERRIDES vendor severity; CRITICAL Rego = fail              | Policy-as-code: org risk > vendor labels                |
+| Image scanning              | Trivy `0.74.0` + **OpenVEX**                         | CD pre-sign              | Fail-closed gate #1 before anything is signed                             | Never sign/attest an image that failed its gate         |
+| Image signing + attestation | Cosign (key)                                         | CD                       | Sign digest + SBOM `cyclonedx` attestation, then **self-verify**          | Identity (sig) ≠ inventory (SBOM)                       |
+| Chart provenance            | Helm `package --sign` (GPG)                          | CD                       | `helm verify` with the **committed** public key                           | Deploy-unit authenticity; tamper detected               |
+| DAST                        | ZAP baseline, in-cluster Job                         | CD (staging)             | Stricter `dast:` policy — high=fail, medium=warn                          | A finding on a live endpoint is worse than a static hit |
+| Runtime verification        | k8s probes + in-cluster smoke Job                    | CD                       | Hard-fail stage with diagnostics-fallback                                 | Probes ≠ business logic; smoke proves the app works     |
+| Policy gate                 | `tools/{normalize,gate,report}.py`                   | CI + CD                  | One decision point per gate; exit codes 0/1/2/3 → pass/warn/fail/error    | Scanners report; **the gate decides**                   |
 
 ---
 
@@ -67,15 +66,14 @@ Triggered on PRs and pushes to `main`. Sequential stages for demo determinism; *
 
 <img width="1416" height="111" alt="image" src="https://github.com/user-attachments/assets/16130cdf-172a-4b7f-aeb6-60edc08ae201" />
 
-
 1. **Clone + unit tests** — ruff + pytest in pinned `python:3.12.7-slim`.
-   *Why: cheapest control first; we don't scan broken code.*
+   _Why: cheapest control first; we don't scan broken code._
 2. **Dependency report** — Syft → CycloneDX SBOM → Grype → report, uploaded to the artifact store.
-   *Why: SBOM-first; the inventory outlives the scan and can be re-evaluated as the vuln DB updates.*
+   _Why: SBOM-first; the inventory outlives the scan and can be re-evaluated as the vuln DB updates._
 3. **Static analysis** — gitleaks (secrets), semgrep (anti-patterns: formatted SQL, MD5), trivy (IaC, builtin + org Rego).
-   *Why: generic rules (semgrep `p/security-audit`, trivy builtins) only catch what their vendors think is risky; the org rules carry the risks *this* codebase actually cares about (our secret format, unsafe SQL, MD5).*
+   _Why: generic rules (semgrep `p/security-audit`, trivy builtins) only catch what their vendors think is risky; the org rules carry the risks *this* codebase actually cares about (our secret format, unsafe SQL, MD5)._
 4. **Gate** — `normalize → gate → report`; `fail`/`error` → FAILURE, `warn` → UNSTABLE.
-   *Why: scanners run sequentially for a deterministic demo — in production they would run in parallel, and only the fastest + four independent exit codes would matter. A failing scan is kept separate from a failing *build*: the scanner's exit code just marks the stage red via `catchError`, while the gate's verdict decides the build status — otherwise a crashy scanner (or a stale rule) would block every merge, and a silently-broken scanner would look like a pass.*
+   _Why: scanners run sequentially for a deterministic demo — in production they would run in parallel, and only the fastest + four independent exit codes would matter. A failing scan is kept separate from a failing *build*: the scanner's exit code just marks the stage red via `catchError`, while the gate's verdict decides the build status — otherwise a crashy scanner (or a stale rule) would block every merge, and a silently-broken scanner would look like a pass._
 
 ## Configurable Gate
 
@@ -89,44 +87,32 @@ Manual, parameterized. One build → one digest → gated promotion.
 
 <img width="1434" height="75" alt="image" src="https://github.com/user-attachments/assets/0d0b2c9e-4582-4dc8-8aa6-0406657cfe33" />
 
-
 1. **Build & push image ONCE** — 3 tags (`<sha8>-<BUILD_NUMBER>`, `latest`, `<APP_VERSION>`), digest recorded.
-   *Why: immutable identity + convenience pointers; only the digest is ever deployed.*
+   _Why: immutable identity + convenience pointers; only the digest is ever deployed._
 2. **Image SBOM + scan + GATE #1** — syft SBOM, trivy image scan (CRITICAL/HIGH, VEX-filtered); gate aborts fail-closed on missing artifacts.
-   *Why: the scanned subject is the exact artifact that will be signed; nothing is signed from an ungated image.*
+   _Why: the scanned subject is the exact artifact that will be signed; nothing is signed from an ungated image._
 3. **Sign + verify** — cosign sign + SBOM attestation, verified against the public key; helm chart GPG-signed + verified with the committed key.
-   *Why: two independent trust chains, zero secret material in the repo.*
+   _Why: two independent trust chains, zero secret material in the repo._
 4. **Deploy staging + DAST + GATE #2** — signed chart deploys the digest-pinned image (non-root, PSS-style); in-cluster ZAP baseline; gate evaluates static + DAST findings (stricter `dast:` policy).
-   *Why: a runtime finding on a live endpoint is a different risk class; production never gets active scanning.*
+   _Why: a runtime finding on a live endpoint is a different risk class; production never gets active scanning._
 5. **Verify + manual promote to production** — smoke Job (health, CRUD, search) + evidence; human approval; SAME digest deployed.
-   *Why: promotion is an explicit human decision; byte-identical artifacts are what was gated.*
-
-
+   _Why: promotion is an explicit human decision; byte-identical artifacts are what was gated._
 
 ## Security Policy and CI violations
 
-| `policy.yaml` rule | Example in this repo | CI result |
-| --- | --- | --- |
-| `fail_tools: [gitleaks]` | `ds-demo-<32hex>` token (seed, `app/config.py`) | Build **FAILS** — categorical, no exception possible |
-| `fail_rule_classes` (SQLi/SSRF/deserial/RCE) | `/demo/unsafe-search` interpolates SQL (seed, `app/db.py:60`) | Build **FAILS** — reachable injection is blocking even at vendor-High |
-| `fail_when` KEV / EPSS ≥ 0.9 | (metadata-driven; no current finding matches) | High+KEV → behaves as Critical |
-| `severity_defaults` high → warn | MD5 password hashing (seed, `app/app.py:43`) | **UNSTABLE** unless excepted |
-| Exceptions (expiring, fingerprint-matched) | EXC-0042 (MD5, expires 2026-09-13, ticket SEC-221) | Finding **EXCEPTED**; audit row written; expiry → fails closed |
-| VEX (`--vex`) | gunicorn CVE-2024-6827 = `not_affected` (do-not-fix-forward case) | filtered at scan time — with evidence, not silence |
-| Fail-closed gate | missing `trivy.sarif` / absent findings input | **ERROR** — a broken scan never looks like a pass |
+| `policy.yaml` rule                           | Example in this repo                                              | CI result                                                             |
+| -------------------------------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `fail_tools: [gitleaks]`                     | `ds-demo-<32hex>` token (seed, `app/config.py`)                   | Build **FAILS** — categorical, no exception possible                  |
+| `fail_rule_classes` (SQLi/SSRF/deserial/RCE) | `/demo/unsafe-search` interpolates SQL (seed, `app/db.py:60`)     | Build **FAILS** — reachable injection is blocking even at vendor-High |
+| `fail_when` KEV / EPSS ≥ 0.9                 | (metadata-driven; no current finding matches)                     | High+KEV → behaves as Critical                                        |
+| `severity_defaults` high → warn              | MD5 password hashing (seed, `app/app.py:43`)                      | **UNSTABLE** unless excepted                                          |
+| Exceptions (expiring, fingerprint-matched)   | EXC-0042 (MD5, expires 2026-09-13, ticket SEC-221)                | Finding **EXCEPTED**; audit row written; expiry → fails closed        |
+| VEX (`--vex`)                                | gunicorn CVE-2024-6827 = `not_affected` (do-not-fix-forward case) | filtered at scan time — with evidence, not silence                    |
+| Fail-closed gate                             | missing `trivy.sarif` / absent findings input                     | **ERROR** — a broken scan never looks like a pass                     |
 
 ## End to end showcase
 
-All runs, normal and failure cases, with screenshots and capture checklists: **[docs/steps/README.md](docs/steps/README.md)**.
-
-| Step | Path | Demonstrates |
-| --- | --- | --- |
-| 01 — CI normal run | [step-01-ci-normal-run.md](docs/steps/step-01-ci-normal-run.md) | full CI: scanners + gate verdicts (seeded FAILs), artifacts |
-| 02 — CI warn/exception/VEX | [step-02-ci-gate-warn-and-exceptions.md](docs/steps/step-02-ci-gate-warn-and-exceptions.md) | UNSTABLE path, EXC-0042, VEX filtering, exception audit |
-| 03 — CD staging path | [step-03-cd-staging-path.md](docs/steps/step-03-cd-staging-path.md) | build→gate→sign→chart→staging→DAST→vuln gate→smoke |
-| 04 — CD failure cases | [step-04-cd-failure-cases.md](docs/steps/step-04-cd-failure-cases.md) | DAST SQLi blocks promotion; fail-closed missing artifact |
-| 05 — CD production promotion | [step-05-cd-production-promotion.md](docs/steps/step-05-cd-production-promotion.md) | approval → same-digest prod deploy → verification evidence |
-| 06 — Supply-chain verification | [step-06-supply-chain-verification.md](docs/steps/step-06-supply-chain-verification.md) | cosign sign/verify + SBOM attestation, chart GPG, tamper |
+Showcase: **[docs/steps/steps.md](docs/steps/steps.md)**.
 
 ## Setup the Demo
 
