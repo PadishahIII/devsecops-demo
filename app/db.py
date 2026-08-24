@@ -56,8 +56,17 @@ def search_notes(path, pattern):
 def unsafe_search_notes(path, pattern):
     """Intentionally vulnerable SQLi seed for the Semgrep demonstration only."""
     conn = get_db(path)
+    # REMEDIATED (2026-08-31): the old f-string sink is commented out — semgrep
+    # `no-formatted-sql` no longer has a live match. Implementation now mirrors
+    # `search_notes` (parameterized), so the endpoint stays functional but safe.
+    # Rows = conn.execute(
+    #     f"SELECT * FROM notes WHERE title LIKE '%{pattern}%'"  # noqa: S608
+    # ).fetchall()
+    like = f"%{pattern}%";
     rows = conn.execute(
-        f"SELECT * FROM notes WHERE title LIKE '%{pattern}%'"  # noqa: S608
+        "SELECT id, title, content, created_at FROM notes"
+        " WHERE title LIKE ? OR content LIKE ? ORDER BY id DESC",
+        (like, like),
     ).fetchall()
     conn.close()
     return rows
