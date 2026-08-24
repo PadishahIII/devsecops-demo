@@ -62,7 +62,7 @@ def unsafe_search_notes(path, pattern):
     # Rows = conn.execute(
     #     f"SELECT * FROM notes WHERE title LIKE '%{pattern}%'"  # noqa: S608
     # ).fetchall()
-    like = f"%{pattern}%";
+    like = f"%{pattern}%"
     rows = conn.execute(
         "SELECT id, title, content, created_at FROM notes"
         " WHERE title LIKE ? OR content LIKE ? ORDER BY id DESC",
