@@ -41,7 +41,6 @@ flowchart LR
     M --> F
 ```
 
-> 🖼 Screenshot pending (bd devsecops-demo-hrj): `assets/screenshots/pipeline-overview.png` — replaces this diagram with the Jenkins stage views.
 
 ## Security methods included
 
@@ -87,7 +86,8 @@ Fail-closed: absent scanner input = ERROR (exit 3), never a pass. Exception audi
 
 Manual, parameterized. One build → one digest → gated promotion.
 
-> 🖼 Screenshot pending: `assets/screenshots/cd-01-stage-view.png` — staging→production run, Stage View.
+<img width="1434" height="75" alt="image" src="https://github.com/user-attachments/assets/0d0b2c9e-4582-4dc8-8aa6-0406657cfe33" />
+
 
 1. **Build & push image ONCE** — 3 tags (`<sha8>-<BUILD_NUMBER>`, `latest`, `<APP_VERSION>`), digest recorded.
    *Why: immutable identity + convenience pointers; only the digest is ever deployed.*
@@ -100,7 +100,7 @@ Manual, parameterized. One build → one digest → gated promotion.
 5. **Verify + manual promote to production** — smoke Job (health, CRUD, search) + evidence; human approval; SAME digest deployed.
    *Why: promotion is an explicit human decision; byte-identical artifacts are what was gated.*
 
-> 🖼 Screenshots pending: `assets/screenshots/cd-02-sign-verify.png`, `cd-03-chart-sign.png`, `cd-04-dast.png`, `cd-05-gate-dast.png`, `cd-06-smoke.png`, `cd-07-promote.png`.
+
 
 ## Security Policy and CI violations
 
