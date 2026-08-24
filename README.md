@@ -65,7 +65,8 @@ flowchart LR
 
 Triggered on PRs and pushes to `main`. Sequential stages for demo determinism; **no credentials** — the PR tier is untrusted.
 
-> 🖼 Screenshot pending: `assets/screenshots/ci-01-stage-view.png` — full CI build, Stage View.
+<img width="1416" height="111" alt="image" src="https://github.com/user-attachments/assets/16130cdf-172a-4b7f-aeb6-60edc08ae201" />
+
 
 1. **Clone + unit tests** — ruff + pytest in pinned `python:3.12.7-slim`.
    *Why: cheapest control first; we don't scan broken code.*
