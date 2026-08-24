@@ -78,10 +78,10 @@ discover → triage → SLA → fix → verify → exception
 
 ## Progress
 
-- [ ] build the minimal pipeline with tool integration and minimal gates, run on a simple repo -> to validate it works
-- [ ] Extend the demo to cover each blocking case and design metrics
+- [x] build the minimal pipeline with tool integration and minimal gates, run on a simple repo -> to validate it works
+- [ ] Extend the demo to cover each blocking case
 - [ ] ~~Add AI triage and add metrics~~
-- [ ] Design and implement more complex gates
+- [x] Design and implement more complex gates
 - [ ] Document the design and decisions
 - [ ] Show the demo by screen shots
 
