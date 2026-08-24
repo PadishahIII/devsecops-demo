@@ -73,9 +73,9 @@ Triggered on PRs and pushes to `main`. Sequential stages for demo determinism; *
 2. **Dependency report** — Syft → CycloneDX SBOM → Grype → report, uploaded to the artifact store.
    *Why: SBOM-first; the inventory outlives the scan and can be re-evaluated as the vuln DB updates.*
 3. **Static analysis** — gitleaks (secrets), semgrep (anti-patterns: formatted SQL, MD5), trivy (IaC, builtin + org Rego).
-   *Why: org rule sets encode our risk; scanners run sequentially for a deterministic demo; scanner breakage ≠ finding — the gate decides.*
+   *Why: generic rules (semgrep `p/security-audit`, trivy builtins) only catch what their vendors think is risky; the org rules carry the risks *this* codebase actually cares about (our secret format, unsafe SQL, MD5).*
 4. **Gate** — `normalize → gate → report`; `fail`/`error` → FAILURE, `warn` → UNSTABLE.
-   *Why: one fail-closed, auditable decision point. Scanners report; the gate decides.*
+   *Why: scanners run sequentially for a deterministic demo — in production they would run in parallel, and only the fastest + four independent exit codes would matter. A failing scan is kept separate from a failing *build*: the scanner's exit code just marks the stage red via `catchError`, while the gate's verdict decides the build status — otherwise a crashy scanner (or a stale rule) would block every merge, and a silently-broken scanner would look like a pass.*
 
 ## Configurable Gate
 
