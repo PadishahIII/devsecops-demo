@@ -2,7 +2,9 @@
 
 A production-shaped demo of turning security scanners into **reliable controls**: PR-time gating, build-once digest promotion, signed + attested artifacts, policy-as-code gates with expiring exceptions, runtime verification (DAST + post-deployment smoke), and a manual-gated promotion path — running on a real Jenkins instance against a deliberately-vulnerable Flask app. **The pipeline is the artifact; every stage ships with its reasoning.**
 
-<img width="6019" height="345" alt="Untitled Diagram drawio" src="https://github.com/user-attachments/assets/773e1efa-2d2a-4a4e-8973-1a7036de3d13" />
+CI/CD pipeline:
+<img width="828" height="2122" alt="Untitled Diagram drawio (1)" src="https://github.com/user-attachments/assets/05e6032f-c174-4822-92a3-4f5bfb0cbbcc" />
+
 
 
 ## Security methods included
