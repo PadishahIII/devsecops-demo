@@ -2,44 +2,8 @@
 
 A production-shaped demo of turning security scanners into **reliable controls**: PR-time gating, build-once digest promotion, signed + attested artifacts, policy-as-code gates with expiring exceptions, runtime verification (DAST + post-deployment smoke), and a manual-gated promotion path — running on a real Jenkins instance against a deliberately-vulnerable Flask app. **The pipeline is the artifact; every stage ships with its reasoning.**
 
-```mermaid
-flowchart LR
-    classDef gate fill:#fff3cd,stroke:#e6a700,stroke-width:2px
-    classDef fail fill:#f8d7da,stroke:#d63384
-    classDef ok fill:#d1e7dd,stroke:#198754
+<img width="6019" height="345" alt="Untitled Diagram drawio" src="https://github.com/user-attachments/assets/773e1efa-2d2a-4a4e-8973-1a7036de3d13" />
 
-    subgraph CI["CI — PR / feature branch · Jenkinsfile.ci · no credentials · untrusted"]
-        A[checkout + fmt/lint/test<br/>ruff + pytest] --> B["secret-scan · gitleaks<br/>org rule ds-demo-&lt;32hex&gt;, SARIF"]
-        B --> C["SAST · semgrep<br/>p/security-audit + org rules"]
-        C --> D["SCA · syft + grype<br/>CycloneDX SBOM → vuln DB"]
-        D --> E["IaC · trivy config<br/>builtin checks + org Rego DS-001/2/3"]
-        E --> G1{{GATE · normalize + gate + report<br/>critical=FAIL · high=WARN · exceptions apply<br/>gitleaks never exceptable}}
-    end
-    G1 -- fail / warn --> X["build FAILURE | UNSTABLE<br/>report.md archived"]
-    X:::fail
-    G1 -- pass --> M["main"]
-    M:::ok
-
-    subgraph CD["CD — main · Jenkinsfile.cd · manual, parameterized"]
-        F["build & push image ONCE<br/>3 tags · digest"] --> H["SBOM syft + trivy image scan<br/>CRITICAL/HIGH · VEX-filtered"]
-        H --> G2{{GATE #1 · image gate<br/>fail-closed on missing artifacts}}
-        G2 -- blocked --> Q["abort — nothing signed"]
-        Q:::fail
-        G2 -- pass --> I["cosign sign + SBOM attestation<br/>verify signature + attestation"]
-        I --> J["helm package --sign + verify<br/>GPG provenance"]
-        J --> K["deploy STAGING by digest<br/>non-root · PSS-style"]
-        K --> L["ZAP DAST in-cluster · staging only"]
-        L --> G3{{GATE #2 · incl. DAST<br/>stricter dast: high=fail · medium=warn}}
-        G3 -- blocked --> R["stop — no promotion"]
-        R:::fail
-        G3 -- pass --> S["post-deployment verification<br/>health + smoke CRUD"]
-        S --> T["manual approval"]
-        T --> U["deploy PRODUCTION<br/>same digest · never rebuilt"]
-        U:::ok
-    end
-
-    M --> F
-```
 
 ## Security methods included
 
