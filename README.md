@@ -131,4 +131,36 @@ docs/                             pipeline-stages.md (stage detail) · steps/ (e
 SETUP_DEMO.md                     environment bring-up guide
 ```
 
-Design narrative and the verified seed inventory: **[docs/DESIGN.md](docs/DESIGN.md)**. Stage-level detail and full reasoning: **[docs/pipeline-stages.md](docs/pipeline-stages.md)**.
+# Threat Model the Demo Flask App - A Practice
+## Trust Boundaries
+In order of trust:
+1. Internet/attacker
+2. Jenkins agent + containers
+3. docker registry, kind cluster
+4. Flask app process
+5. SQLite DB, secrets, signing keys
+
+## Assets
+DREAD-style value ranking:
+| Asset | Value | Notes |
+| ---- | ----- | ------------------- |
+| Signed image digest + SBOM attestation | Critical | verify-image stage in CD enforces it | 
+| Notes DB | Medium | demo data | 
+| APP_SECRET_KEY,ADMIN_PASSWORD_HASH | Medium | env-driven |
+
+## Dataflow 
+<img width="790" height="473" alt="image" src="https://github.com/user-attachments/assets/c44c3864-b98c-49c3-8dd9-f5d235d9e465" />
+
+
+## STRIDE
+| Threat | Risk | Pipeline control (countermeasure) |
+| ---- | ---------------- | ---------------- |
+| Spoofing | 1) /login+/admin accept a password query param, md5 hash is crackable, no rate-limiting; 2) Image in registry could be replaced | 1) Semgrep no-md5-hashing  -> gate fail -> block CI; 2) cosign key signing + verification, Helm chart Sigining |
+| Tampering | 1) /demo/unsafe-search f-string SQLi; 2) SBOM drift | 1) Semgrep no-formatted-sql -> gate fail -> block CI; 2) SBOM attested by cosign |
+| Repudiation | No audit logging for POST /notes (anonymous create) | no countermeasure; future story: audit log | 
+| Information Disclosure | /export/notes is unauthenticated bulk data exfiltration surface | no countermeasure; future story: authentication |
+| Denial of Service | /demo/unsafe-search '%' wildcard + unbounded LIKE condition + no rate-limiting | no countermeasure; future story: DDoS protection | 
+| Elevation | - | - |
+
+
+
