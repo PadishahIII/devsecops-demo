@@ -172,3 +172,9 @@
 - Evidence: Jenkinsfile.cd runGate (commit e66e98a); generic-whitelist lines 15-16 (JsonSlurper), 782 (UUID randomUUID), no java.io.File; docker CONVERSION check printed SYNTAX OK; shell predicate tested missing/empty/nonempty → 1/1/0.
 - Reuse: before using `new X(...)` in a declarative pipeline, grep the plugin's `generic-whitelist` for the constructor signature; prefer sh-based checks for filesystem existence/emptiness. Alternative was approving `new java.io.File java.lang.String` in Manage Jenkins → In-process Script Approval — works, but adds a manual setup step.
 
+
+## 2026-08-25 — Chinese README (README.zh-CN.md)
+
+- Context: User is using this repo as a DevSecOps portfolio; wanted a Chinese version of README.md with a concise narrative.
+- Decision: Created README.zh-CN.md (standard localization convention) rather than overwriting README.md; English README kept as canonical. Added a top link back to README.md. Kept tool names, stage names, and credential IDs in English; narrative cells translated with light restructuring for flow.
+- Reuse: If README.md changes materially, regenerate README.zh-CN.md from it.

@@ -1,6 +1,8 @@
 # devsecops-demo — a gated, supply-chain-aware delivery pipeline
 
-A production-shaped demo of turning security scanners into **reliable controls**: PR-time gating, build-once digest promotion, signed + attested artifacts, policy-as-code gates with expiring exceptions, runtime verification (DAST + post-deployment smoke), and a manual-gated promotion path — running on a real Jenkins instance against a deliberately-vulnerable Flask app. **The pipeline is the artifact; every stage ships with its reasoning.**
+> [English](README.md) | [中文](README.zh-CN.md)
+
+A production-shaped demo of turning security scanners into **reliable controls**:
 
 **CI/CD pipeline:**
 
@@ -77,7 +79,7 @@ Manual, parameterized. One build → one digest → gated promotion.
 
 5. **Verify + manual promote to production** — smoke Job (health, CRUD, search) + evidence; human approval; SAME digest deployed.
 
-   _Why: promotion is an explicit human decision; we ensure the digest deployed is scanned and trusted._
+   _Why_: promotion is an explicit human decision; we ensure the digest deployed is scanned and trusted._
 
 ## Security Policy and CI violations
 
