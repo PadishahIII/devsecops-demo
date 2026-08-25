@@ -6,22 +6,20 @@ A production-shaped demo of turning security scanners into **reliable controls**
 
 <img width="828" height="2122" alt="Untitled Diagram drawio (1)" src="https://github.com/user-attachments/assets/05e6032f-c174-4822-92a3-4f5bfb0cbbcc" />
 
-
-
 ## Security methods included
 
-| Method                      | Tool                                                 | Phase                    | Gate behavior                                                             | Decision                                                |
-| --------------------------- | ---------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------------- |
-| Secret scanning             | Gitleaks `v8.21.2` (+ org rule `demo-api-token`)     | CI                       | **Fails categorically** (`fail_tools`) — never exceptable                 | A leaked secret is a leak regardless of severity        |
-| SAST                        | Semgrep `1.155.0` (`p/security-audit` + org rules)   | CI                       | Fail by **exploitability class** (SQLi/SSRF/deserial/RCE), warn otherwise | Vendor severity undervalues reachable injection         |
-| SCA / SBOM                  | Syft `v1.51.0` + Grype `v0.115.0`                    | CI (source) + CD (image) | Severity defaults + **KEV/EPSS overrides**                                | SBOM-first: CycloneDX out, Grype consumes SBOM          |
-| IaC / manifest              | Trivy `0.74.0` config + **custom Rego** (DS-001/2/3) | CI                       | Org severity OVERRIDES vendor severity; CRITICAL Rego = fail              | Policy-as-code: org risk > vendor labels                |
-| Image scanning              | Trivy `0.74.0` + **OpenVEX**                         | CD pre-sign              | Fail-closed gate #1 before anything is signed                             | Never sign/attest an image that failed its gate         |
-| Image signing + attestation | Cosign (key)                                         | CD                       | Sign digest + SBOM `cyclonedx` attestation, then **self-verify**          | Identity (sig) ≠ inventory (SBOM)                       |
-| Chart provenance            | Helm `package --sign` (GPG)                          | CD                       | `helm verify` with the **committed** public key                           | Deploy-unit authenticity; tamper detected               |
-| DAST                        | ZAP baseline, in-cluster Job                         | CD (staging)             | Stricter `dast:` policy — high=fail, medium=warn                          | A finding on a live endpoint is worse than a static hit |
-| Runtime verification        | k8s probes + in-cluster smoke Job                    | CD                       | Hard-fail stage with diagnostics-fallback                                 | Probes ≠ business logic; smoke proves the app works     |
-| Policy gate                 | `tools/{normalize,gate,report}.py`                   | CI + CD                  | One decision point per gate; exit codes 0/1/2/3 → pass/warn/fail/error    | Scanners report; **the gate decides**                   |
+| Method                      | Tool                                                 | Phase                    | Gate behavior                                                          | Decision/Trade-off                                                                        |
+| --------------------------- | ---------------------------------------------------- | ------------------------ | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Secret scanning             | Gitleaks `v8.21.2` (+ org rule `demo-api-token`)     | CI                       | **Fails categorically** (`fail_tools`) — never exceptable              | A leaked secret is a leak regardless of severity                                          |
+| SAST                        | Semgrep `1.155.0` (`p/security-audit` + org rules)   | CI                       | Fail critical and specific vuln types, warn high                       | Semgrep is lightweight and shallow, enough for our demo app                               |
+| SCA / SBOM                  | Syft `v1.51.0` + Grype `v0.115.0`                    | CI (source) + CD (image) | Severity defaults + **KEV/EPSS overrides**                             | SBOM-first: CycloneDX out, Grype consumes SBOM; the inventory outlives the scan           |
+| IaC / manifest              | Trivy `0.74.0` config + **custom Rego** (DS-001/2/3) | CI                       | Org severity OVERRIDES vendor severity; CRITICAL Rego = fail           | Policy-as-code: org risk > vendor labels                                                  |
+| Image scanning              | Trivy `0.74.0` + **OpenVEX**                         | CD pre-sign              | Fail-closed gate #1 before anything is signed                          | Never sign/attest an image that failed its gate                                           |
+| Image signing + attestation | Cosign (key)                                         | CD                       | Sign digest + SBOM `cyclonedx` attestation, then **self-verify**       | Identity (sig) ≠ inventory (SBOM)                                                         |
+| Chart provenance            | Helm `package --sign` (GPG)                          | CD                       | `helm verify` with the **committed** public key                        | Deploy-unit authenticity; tamper detected                                                 |
+| DAST                        | ZAP baseline, in-cluster Job                         | CD (staging)             | Stricter `dast:` policy — high=fail, medium=warn                       | Live vulns deserve stricter gate: A finding on a live endpoint is worse than a static hit |
+| Runtime verification        | k8s probes + in-cluster smoke Job                    | CD                       | Hard-fail stage with diagnostics-fallback                              | Probes ≠ business logic; smoke proves the app works                                       |
+| Policy gate                 | `tools/{normalize,gate,report}.py`                   | CI + CD                  | One decision point per gate; exit codes 0/1/2/3 → pass/warn/fail/error | Read scanners reports, **the gate decides the pipeline state**                            |
 
 ---
 
@@ -33,20 +31,27 @@ Triggered on PRs and pushes to `main`. Sequential stages for demo determinism; *
 
 <img width="1416" height="111" alt="image" src="https://github.com/user-attachments/assets/16130cdf-172a-4b7f-aeb6-60edc08ae201" />
 
-1. **Clone + unit tests** — ruff + pytest in pinned `python:3.12.7-slim`.
+1. **Clone + unit tests** — ruff + pytest
+
    _Why: cheapest control first; we don't scan broken code._
+
 2. **Dependency report** — Syft → CycloneDX SBOM → Grype → report, uploaded to the artifact store.
+
    _Why: SBOM-first; the inventory outlives the scan and can be re-evaluated as the vuln DB updates._
+
 3. **Static analysis** — gitleaks (secrets), semgrep (anti-patterns: formatted SQL, MD5), trivy (IaC, builtin + org Rego).
+
    _Why: generic rules (semgrep `p/security-audit`, trivy builtins) only catch what their vendors think is risky; the org rules carry the risks *this* codebase actually cares about (our secret format, unsafe SQL, MD5)._
+
 4. **Gate** — `normalize → gate → report`; `fail`/`error` → FAILURE, `warn` → UNSTABLE.
-   _Why: scanners run sequentially for a deterministic demo — in production they would run in parallel, and only the fastest + four independent exit codes would matter. A failing scan is kept separate from a failing *build*: the scanner's exit code just marks the stage red via `catchError`, while the gate's verdict decides the build status — otherwise a crashy scanner (or a stale rule) would block every merge, and a silently-broken scanner would look like a pass._
+
+   _Why: scanners run sequentially for a deterministic demo — in production they would run in parallel. Best-effort: report issues as many as possible, and the gate decides the pipeline status. _
 
 ## Configurable Gate
 
-`security/policy.yaml` — action precedence: **exceptions** (expiring, fingerprint-matched) > **exploitability classes** > **categorical tools** (gitleaks) > **KEV/EPSS** > **severity defaults** (critical=fail, high=warn, medium=pass).
+`security/policy.yaml` — action precedence: **exceptions** (fingerprint-matched) > **categorical tools** (gitleaks) > **KEV/EPSS** > **severity defaults** (critical=fail, high=warn, medium=pass).
 
-Fail-closed: absent scanner input = ERROR (exit 3), never a pass. Exception audit → `audit/exceptions-audit.jsonl`.
+_Why_: we use highly configurable policy to fit different org requirements
 
 ## Continuous Delivery (`Jenkinsfile.cd`)
 
@@ -55,15 +60,24 @@ Manual, parameterized. One build → one digest → gated promotion.
 <img width="1434" height="75" alt="image" src="https://github.com/user-attachments/assets/0d0b2c9e-4582-4dc8-8aa6-0406657cfe33" />
 
 1. **Build & push image ONCE** — 3 tags (`<sha8>-<BUILD_NUMBER>`, `latest`, `<APP_VERSION>`), digest recorded.
+
    _Why: immutable identity + convenience pointers; only the digest is ever deployed._
-2. **Image SBOM + scan + GATE #1** — syft SBOM, trivy image scan (CRITICAL/HIGH, VEX-filtered); gate aborts fail-closed on missing artifacts.
+
+2. **Image SBOM + scan + GATE #1** — syft SBOM, trivy image scan (CRITICAL/HIGH, VEX-filtered).
+
    _Why: the scanned subject is the exact artifact that will be signed; nothing is signed from an ungated image._
-3. **Sign + verify** — cosign sign + SBOM attestation, verified against the public key; helm chart GPG-signed + verified with the committed key.
-   _Why: two independent trust chains, zero secret material in the repo._
-4. **Deploy staging + DAST + GATE #2** — signed chart deploys the digest-pinned image (non-root, PSS-style); in-cluster ZAP baseline; gate evaluates static + DAST findings (stricter `dast:` policy).
+
+3. **Sign + verify** — cosign sign + SBOM attestation, verified against the public key; helm chart GPG-signed + verified.
+
+   _Why: two independent trust chains_
+
+4. **Deploy staging + DAST + GATE #2** — signed chart deploys the digest-pinned image; in-cluster ZAP baseline; gate evaluates static + DAST findings (stricter `dast:` policy).
+
    _Why: a runtime finding on a live endpoint is a different risk class; production never gets active scanning._
+
 5. **Verify + manual promote to production** — smoke Job (health, CRUD, search) + evidence; human approval; SAME digest deployed.
-   _Why: promotion is an explicit human decision; byte-identical artifacts are what was gated._
+
+   _Why: promotion is an explicit human decision; we ensure the digest deployed is scanned and trusted._
 
 ## Security Policy and CI violations
 
@@ -99,8 +113,11 @@ SETUP_DEMO.md                     environment bring-up guide
 ```
 
 # Threat Model the Demo Flask App - A Practice
+
 ## Trust Boundaries
+
 In order of trust:
+
 1. Internet/attacker
 2. Jenkins agent + containers
 3. docker registry, kind cluster
@@ -108,26 +125,26 @@ In order of trust:
 5. SQLite DB, secrets, signing keys
 
 ## Assets
-DREAD-style value ranking:
-| Asset | Value | Notes |
-| ---- | ----- | ------------------- |
-| Signed image digest + SBOM attestation | Critical | verify-image stage in CD enforces it | 
-| Notes DB | Medium | demo data | 
-| APP_SECRET_KEY,ADMIN_PASSWORD_HASH | Medium | env-driven |
 
-## Dataflow 
+DREAD-style value ranking:
+
+| Asset                                  | Value    | Notes                                |
+| -------------------------------------- | -------- | ------------------------------------ |
+| Signed image digest + SBOM attestation | Critical | verify-image stage in CD enforces it |
+| Notes DB                               | Medium   | demo data                            |
+| APP_SECRET_KEY,ADMIN_PASSWORD_HASH     | Medium   | env-driven                           |
+
+## Dataflow
+
 <img width="790" height="473" alt="image" src="https://github.com/user-attachments/assets/c44c3864-b98c-49c3-8dd9-f5d235d9e465" />
 
-
 ## STRIDE
-| Threat | Risk | Pipeline control (countermeasure) |
-| ---- | ---------------- | ---------------- |
-| Spoofing | 1) /login+/admin accept a password query param, md5 hash is crackable, no rate-limiting; 2) Image in registry could be replaced | 1) Semgrep no-md5-hashing  -> gate fail -> block CI; 2) cosign key signing + verification, Helm chart Sigining |
-| Tampering | 1) /demo/unsafe-search f-string SQLi; 2) SBOM drift | 1) Semgrep no-formatted-sql -> gate fail -> block CI; 2) SBOM attested by cosign |
-| Repudiation | No audit logging for POST /notes (anonymous create) | no countermeasure; future story: audit log | 
-| Information Disclosure | /export/notes is unauthenticated bulk data exfiltration surface | no countermeasure; future story: authentication |
-| Denial of Service | /demo/unsafe-search '%' wildcard + unbounded LIKE condition + no rate-limiting | no countermeasure; future story: DDoS protection | 
-| Elevation | - | - |
 
-
-
+| Threat                 | Risk                                                                                                                            | Pipeline control (countermeasure)                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Spoofing               | 1) /login+/admin accept a password query param, md5 hash is crackable, no rate-limiting; 2) Image in registry could be replaced | 1) Semgrep no-md5-hashing -> gate fail -> block CI; 2) cosign key signing + verification, Helm chart Sigining |
+| Tampering              | 1) /demo/unsafe-search f-string SQLi; 2) SBOM drift                                                                             | 1) Semgrep no-formatted-sql -> gate fail -> block CI; 2) SBOM attested by cosign                              |
+| Repudiation            | No audit logging for POST /notes (anonymous create)                                                                             | no countermeasure; future story: audit log                                                                    |
+| Information Disclosure | /export/notes is unauthenticated bulk data exfiltration surface                                                                 | no countermeasure; future story: authentication                                                               |
+| Denial of Service      | /demo/unsafe-search '%' wildcard + unbounded LIKE condition + no rate-limiting                                                  | no countermeasure; future story: DDoS protection                                                              |
+| Elevation              | -                                                                                                                               | -                                                                                                             |
