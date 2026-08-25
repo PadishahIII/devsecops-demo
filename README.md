@@ -47,11 +47,11 @@ Triggered on PRs and pushes to `main`. Sequential stages for demo determinism; *
 
 4. **Gate** — `normalize → gate → report`; `fail`/`error` → FAILURE, `warn` → UNSTABLE.
 
-   _Why: scanners run sequentially for a deterministic demo — in production they would run in parallel. Best-effort: report issues as many as possible, and the gate decides the pipeline status. _
+   _Why_: scanners run sequentially for a deterministic demo — in production they would run in parallel. Best-effort: report issues as many as possible, and the gate decides the pipeline status.
 
 ## Configurable Gate
 
-`security/policy.yaml` — action precedence: **exceptions** (fingerprint-matched) > **categorical tools** (gitleaks) > **KEV/EPSS** > **severity defaults** (critical=fail, high=warn, medium=pass).
+[security/policy.yaml](security/policy.yaml) — action precedence: **exceptions** (fingerprint-matched) > **categorical tools** (gitleaks) > **KEV/EPSS** > **severity defaults** (critical=fail, high=warn, medium=pass).
 
 _Why_: we use highly configurable policy to fit different org requirements
 
