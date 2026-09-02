@@ -1,8 +1,8 @@
-# devsecops-demo — a gated, supply-chain-aware delivery pipeline
+# a gated, supply-chain-aware delivery pipeline
 
 > [English](README.md) | [中文](README.zh-CN.md)
 
-A production-shaped demo of turning security scanners into **reliable controls**:
+A production-shaped CI/CD pipeline of turning security scanners into **reliable controls**:
 
 **CI/CD pipeline:**
 
