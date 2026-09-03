@@ -35,15 +35,22 @@ PR 与 push 到 `main` 时触发。阶段串行执行以保证演示的确定性
 
    _Why_：先做最便宜的控制；不扫描坏代码。
 
-2. **Dependency report** — Syft → CycloneDX SBOM → Grype → 报告，上传到制品库。
+2. **Secret 扫描** — gitleaks 扫描 git 历史（组织自定义配置，SARIF 输出，`--redact`）。
+
+   _Why_：密钥泄露无法撤销——策略把 gitleaks 设为一票否决（`fail_tools`），任何例外都无效。stage 的红由 `catchError` 标记、最终由门禁裁决：扫描器故障 ≠ 发现。
+
+3. **SAST** — semgrep（`p/security-audit` + 组织规则 `no-formatted-sql`、`no-md5-hashing`）。
+
+   _Why_：通用规则只能发现厂商认为有风险的东西；组织规则承载的才是**这个代码库**真正关心的风险（不安全的 SQL、MD5）。
+
+4. **SCA / SBOM** — Syft → CycloneDX SBOM → Grype → 报告，上传到制品库。
 
    _Why_：SBOM 优先；持久化清单，漏洞库更新后可以随时重新评估。
 
-3. **Static analysis** — gitleaks（密钥）、semgrep（反模式：拼接 SQL、MD5）、trivy（IaC，内置规则 + 组织 Rego）。
+5. **IaC** — trivy config（内置规则 + 组织 Rego `DS-001/2/3`）。
 
-   _Why_：通用规则（semgrep `p/security-audit`、trivy 内置规则）只能发现厂商认为有风险的东西；组织规则承载的才是**这个代码库**真正关心的风险（我们的密钥格式、不安全的 SQL、MD5）。
-
-4. **Gate** — `normalize → gate → report`；`fail`/`error` → FAILURE，`warn` → UNSTABLE。
+   _Why_：Rego 策略承载组织自己的风险声明——厂商评级被组织意图覆盖。
+6. **Gate + report** — `normalize → gate → report`；`fail`/`error` → FAILURE，`warn` → UNSTABLE。
 
    _Why_：扫描器串行执行是为了演示的确定性——生产环境应并行。尽力报告尽可能多的问题，由门禁决定流水线最终状态。
 

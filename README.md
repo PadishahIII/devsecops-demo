@@ -37,15 +37,23 @@ Triggered on PRs and pushes to `main`. Sequential stages for demo determinism; *
 
    _Why: cheapest control first; we don't scan broken code._
 
-2. **Dependency report** — Syft → CycloneDX SBOM → Grype → report, uploaded to the artifact store.
+2. **Secret scanning** — gitleaks over git history (org config, SARIF out, `--redact`).
+
+   _Why: a leaked secret can't be un-leaked — the policy treats gitleaks as categorical (`fail_tools`), no exception possible. Stage red is deferred to the gate (`catchError`): scanner breakage ≠ finding, the gate still decides._
+
+3. **SAST** — semgrep (`p/security-audit` + org rules `no-formatted-sql`, `no-md5-hashing`).
+
+   _Why: generic rules only catch what their vendors think is risky; the org rules carry the risks *this* codebase actually cares about (unsafe SQL, MD5)._
+
+4. **SCA / SBOM** — Syft → CycloneDX SBOM → Grype → report, uploaded to the artifact store.
 
    _Why: SBOM-first; the inventory outlives the scan and can be re-evaluated as the vuln DB updates._
 
-3. **Static analysis** — gitleaks (secrets), semgrep (anti-patterns: formatted SQL, MD5), trivy (IaC, builtin + org Rego).
+5. **IaC** — trivy config (builtin checks + org Rego `DS-001/2/3`).
 
-   _Why: generic rules (semgrep `p/security-audit`, trivy builtins) only catch what their vendors think is risky; the org rules carry the risks *this* codebase actually cares about (our secret format, unsafe SQL, MD5)._
+   _Why: Rego policies carry the org's own risk statements — vendor severity gets overridden by org intent._
 
-4. **Gate** — `normalize → gate → report`; `fail`/`error` → FAILURE, `warn` → UNSTABLE.
+6. **Gate + report** — `normalize → gate → report`; `fail`/`error` → FAILURE, `warn` → UNSTABLE.
 
    _Why_: scanners run sequentially for a deterministic demo — in production they would run in parallel. Best-effort: report issues as many as possible, and the gate decides the pipeline status.
 
