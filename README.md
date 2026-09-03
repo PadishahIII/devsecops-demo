@@ -1,4 +1,4 @@
-# a gated, supply-chain-aware delivery pipeline
+# Gatehouse - a gated, supply-chain-aware delivery pipeline
 
 > [English](README.md) | [中文](README.zh-CN.md)
 
